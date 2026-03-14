@@ -21,7 +21,7 @@ from pgvector.psycopg import register_vector
 
 from chunk_embed.parse import parse_chunks
 from chunk_embed.embed import BgeM3Embedder, embed_chunks
-from chunk_embed.store import ensure_schema, upsert_document, insert_chunks
+from chunk_embed.store import ensure_schema, upsert_document, insert_chunks, search_chunks
 
 DB_URL = "postgresql://localhost/chunk_embed_test"
 
@@ -230,7 +230,33 @@ def run_smoke_test():
         ).fetchall()
         check("Per-page page_numbers", [r[0] for r in page_rows] == [1, 2])
 
-        # --- 5. Re-ingest test ---
+        # --- 5. Semantic search via search_chunks ---
+        print("\n--- Semantic search ---")
+
+        # Query with a cosmogonic theme — Sanskrit chunks should rank highest
+        query_text = "Sanskrit cosmogonic verse about creation"
+        query_emb = embedder.embed([query_text])[0]
+
+        results = search_chunks(conn, query_emb, top_k=5)
+        check("Search returns results", len(results) > 0)
+        # Sanskrit document chunks should rank above code doc chunks
+        top_source = results[0].source_path
+        check("Top result is Sanskrit doc", top_source == "/test/nasadiya.md",
+              f"got {top_source}")
+
+        # Source filter: restrict to code doc only
+        code_results = search_chunks(conn, query_emb, source_path="/test/quickstart.md")
+        check("Source filter returns only code doc",
+              all(r.source_path == "/test/quickstart.md" for r in code_results))
+        check("Source filter has results", len(code_results) > 0)
+
+        # Chunk type filter: headings only
+        heading_results = search_chunks(conn, query_emb, chunk_type="heading")
+        check("Chunk type filter returns only headings",
+              all(r.chunk_type == "heading" for r in heading_results))
+        check("Heading filter has results", len(heading_results) > 0)
+
+        # --- 6. Re-ingest test ---
         print("\n--- Re-ingest ---")
         old_id = conn.execute(
             "SELECT id FROM documents WHERE source_path = %s", ("/test/nasadiya.md",)

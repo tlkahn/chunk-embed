@@ -2,7 +2,7 @@
 
 Embed [text-chunker](https://github.com/your-user/text-chunker) JSON output into PostgreSQL + pgvector for semantic search.
 
-Takes structural chunks (headings, paragraphs, code blocks, math, etc.) from Markdown or LaTeX documents, encodes them with [BGE-M3](https://huggingface.co/BAAI/bge-m3) (1024-dim multilingual embeddings), and stores both the text and vectors in PostgreSQL for later retrieval.
+Takes structural chunks (headings, paragraphs, code blocks, math, etc.) from Markdown or LaTeX documents, encodes them with [BGE-M3](https://huggingface.co/BAAI/bge-m3) (1024-dim multilingual embeddings), and stores both the text and vectors in PostgreSQL. Supports semantic similarity search via the `query` subcommand.
 
 ## Installation
 
@@ -22,34 +22,61 @@ psql chunk_embed -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
 ## Usage
 
-### Pipe from text-chunker
+### Ingest: pipe from text-chunker
 
 ```bash
-text-chunker --json chunks document.md | chunk-embed --source document.md
+text-chunker --json chunks document.md | chunk-embed ingest --source document.md
 ```
 
-### From a JSON file
+### Ingest: from a JSON file
 
 ```bash
 text-chunker --json chunks document.md > chunks.json
-chunk-embed chunks.json
+chunk-embed ingest chunks.json
 ```
 
 Source path is inferred from the file argument. Override with `--source`:
 
 ```bash
-chunk-embed chunks.json --source original/path/to/document.md
+chunk-embed ingest chunks.json --source original/path/to/document.md
 ```
 
-### Dry run
+### Ingest: dry run
 
 Parse and embed without writing to the database:
 
 ```bash
-chunk-embed chunks.json --dry-run
+chunk-embed ingest chunks.json --dry-run
 ```
 
-### Options
+### Query: semantic search
+
+Search ingested chunks by semantic similarity:
+
+```bash
+chunk-embed query "how does authentication work"
+```
+
+Output as JSON for programmatic use:
+
+```bash
+chunk-embed query "error handling patterns" --json
+```
+
+Filter by source file or chunk type:
+
+```bash
+chunk-embed query "database schema" --source docs/architecture.md
+chunk-embed query "function signatures" --chunk-type code_block --top-k 5
+```
+
+Set a minimum similarity threshold:
+
+```bash
+chunk-embed query "yoga philosophy" --threshold 0.5
+```
+
+### Ingest options
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -58,6 +85,18 @@ chunk-embed chunks.json --dry-run
 | `--batch-size` | 32 | Embedding batch size |
 | `--database-url` | `postgresql://localhost/chunk_embed` | Connection string (env: `DATABASE_URL`) |
 | `--dry-run` | off | Skip database write |
+
+### Query options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `QUERY_TEXT` | (required) | Text to search for |
+| `--top-k` | 10 | Number of results to return |
+| `--source` | all | Filter results by source path |
+| `--chunk-type` | all | Filter results by chunk type |
+| `--threshold` | 0.0 | Minimum similarity score (-1 to 1) |
+| `--json` | off | Output results as JSON |
+| `--database-url` | `postgresql://localhost/chunk_embed` | Connection string (env: `DATABASE_URL`) |
 
 ## Input format
 
@@ -85,7 +124,7 @@ Supported chunk types: `heading`, `paragraph`, `list_item`, `code_block`, `table
 
 ## Re-ingestion
 
-Running chunk-embed on a document that was previously ingested replaces the old data. The `source_path` column has a unique constraint — the old document and all its chunks are deleted before inserting the new version.
+Running `chunk-embed ingest` on a document that was previously ingested replaces the old data. The `source_path` column has a unique constraint — the old document and all its chunks are deleted before inserting the new version.
 
 ## Database schema
 
@@ -107,7 +146,9 @@ chunk-embed (Python CLI)
     │
     ├── parse.py    → validate JSON, produce ChunkData objects
     ├── embed.py    → BGE-M3 encoding via sentence-transformers
-    └── store.py    → pgvector storage (upsert + bulk insert)
+    ├── store.py    → pgvector storage + cosine similarity search
+    ├── format.py   → human-readable and JSON output formatters
+    └── cli.py      → Click group: ingest + query subcommands
     │
     ▼
 PostgreSQL + pgvector

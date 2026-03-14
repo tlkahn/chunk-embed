@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import psycopg
 
-from chunk_embed.models import ChunkData
+from chunk_embed.models import ChunkData, SearchResult
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -79,3 +79,56 @@ def insert_chunks(
                     emb.tolist(),
                 ),
             )
+
+
+def search_chunks(
+    conn: psycopg.Connection,
+    query_embedding: np.ndarray,
+    top_k: int = 10,
+    source_path: str | None = None,
+    chunk_type: str | None = None,
+    threshold: float = 0.0,
+) -> list[SearchResult]:
+    query_vec = query_embedding.tolist()
+
+    sql = (
+        "SELECT c.text, c.chunk_type, c.heading_context, c.heading_level, "
+        "c.page_number, c.source_line_start, c.source_line_end, "
+        "d.source_path, 1 - (c.embedding <=> %s::vector) AS similarity "
+        "FROM chunks c "
+        "JOIN documents d ON c.document_id = d.id "
+        "WHERE 1=1"
+    )
+    params: list = [query_vec]
+
+    if source_path is not None:
+        sql += " AND d.source_path = %s"
+        params.append(source_path)
+
+    if chunk_type is not None:
+        sql += " AND c.chunk_type = %s"
+        params.append(chunk_type)
+
+    sql += " ORDER BY c.embedding <=> %s::vector LIMIT %s"
+    params.extend([query_vec, top_k])
+
+    rows = conn.execute(sql, params).fetchall()
+
+    results = []
+    for row in rows:
+        sim = float(row[8])
+        if sim < threshold:
+            continue
+        results.append(SearchResult(
+            text=row[0],
+            chunk_type=row[1],
+            heading_context=list(row[2]) if row[2] else [],
+            heading_level=row[3],
+            page_number=row[4],
+            source_line_start=row[5],
+            source_line_end=row[6],
+            source_path=row[7],
+            similarity=sim,
+        ))
+
+    return results
