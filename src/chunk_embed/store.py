@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import psycopg
+from tqdm import tqdm
 
 from chunk_embed.models import ChunkData, SearchResult
 
@@ -60,7 +61,7 @@ def insert_chunks(
     embeddings: list[np.ndarray],
 ) -> None:
     with conn.cursor() as cur:
-        for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+        for i, (chunk, emb) in tqdm(enumerate(zip(chunks, embeddings)), total=len(chunks), desc="Storing", unit="chunk"):
             cur.execute(
                 "INSERT INTO chunks "
                 "(document_id, chunk_index, text, chunk_type, heading_context, "

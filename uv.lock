@@ -272,6 +272,7 @@ dependencies = [
     { name = "psycopg", extra = ["binary"] },
     { name = "seaborn" },
     { name = "sentence-transformers" },
+    { name = "tqdm" },
 ]
 
 [package.dev-dependencies]
@@ -291,6 +292,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "sentence-transformers", specifier = ">=3.0" },
+    { name = "tqdm", specifier = ">=4.66" },
 ]
 
 [package.metadata.requires-dev]

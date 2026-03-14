@@ -60,8 +60,6 @@ def ingest(input_path: str, source: str | None, batch_size: int, database_url: s
 
     embedder = BgeM3Embedder()
     embeddings = embed_chunks(chunks, embedder, batch_size=batch_size)
-    click.echo(f"Embedded {len(embeddings)} chunks")
-
     if dry_run:
         click.echo("Dry run: skipping database write")
         return
@@ -73,7 +71,7 @@ def ingest(input_path: str, source: str | None, batch_size: int, database_url: s
         insert_chunks(conn, doc_id, chunks, embeddings)
         conn.commit()
 
-    click.echo(f"Stored document {doc_id} with {len(embeddings)} chunks")
+    click.echo(f"Done (document {doc_id})")
 
 
 @main.command()
