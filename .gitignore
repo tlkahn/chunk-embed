@@ -14,3 +14,9 @@ local_bge_m3/
 
 # Tool/IDE directories
 .claude/
+
+.pytest_cache
+
+.ipynb*
+
+uv.lock
