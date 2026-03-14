@@ -41,6 +41,24 @@ Source path is inferred from the file argument. Override with `--source`:
 chunk-embed ingest chunks.json --source original/path/to/document.md
 ```
 
+Note: `--source` is **required** when reading from stdin, since there is no filename to infer from:
+
+```bash
+# stdin: no filename, so --source is required
+text-chunker --json chunks file.md | chunk-embed ingest --source file.md
+
+# without --source, this fails with an error
+text-chunker --json chunks file.md | chunk-embed ingest
+# → "Error: --source is required when reading from stdin"
+```
+
+When passing a file argument, `--source` defaults to that path automatically:
+
+```bash
+# --source defaults to "chunks.json"
+chunk-embed ingest chunks.json
+```
+
 ### Ingest: dry run
 
 Parse and embed without writing to the database:
