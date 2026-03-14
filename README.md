@@ -6,7 +6,7 @@ Takes structural chunks (headings, paragraphs, code blocks, math, etc.) from Mar
 
 ## Installation
 
-Requires Python 3.13+, PostgreSQL with [pgvector](https://github.com/pgvector/pgvector).
+Requires Python 3.13+, PostgreSQL with [pgvector](https://github.com/pgvector/pgvector). Optional: [Sentenza](https://github.com/your-user/sentenza) for sentence-level splitting.
 
 ```bash
 cd ~/Projects/chunk-embed
@@ -59,6 +59,25 @@ When passing a file argument, `--source` defaults to that path automatically:
 chunk-embed ingest chunks.json
 ```
 
+### Ingest: sentence splitting
+
+By default, prose chunks (paragraphs, headings, block quotes, etc.) are split into individual sentences via [Sentenza](https://github.com/your-user/sentenza) before embedding. Each sentence gets its own vector, improving retrieval precision.
+
+```bash
+# Default: split English text into sentences
+text-chunker --json chunks document.md | chunk-embed ingest --source document.md
+
+# Specify language for sentence splitting
+chunk-embed ingest chunks.json --lang de
+
+# Disable sentence splitting (embed whole chunks)
+chunk-embed ingest chunks.json --no-split
+```
+
+Splittable chunk types: `paragraph`, `block_quote`, `definition_item`, `theorem`, `list_item`, `heading`. Non-splittable types (`code_block`, `math_block`, `table`) pass through unchanged.
+
+If the `sentenza` binary is not found, splitting is skipped gracefully and chunks are embedded whole.
+
 ### Ingest: dry run
 
 Parse and embed without writing to the database:
@@ -102,6 +121,8 @@ chunk-embed query "yoga philosophy" --threshold 0.5
 | `--source` | inferred from file | Source path stored as document metadata |
 | `--batch-size` | 32 | Embedding batch size |
 | `--database-url` | `postgresql://localhost/chunk_embed` | Connection string (env: `DATABASE_URL`) |
+| `--lang` | `en` | ISO 639-1 language code for sentence splitting |
+| `--no-split` | off | Disable sentence splitting |
 | `--dry-run` | off | Skip database write |
 
 ### Query options
@@ -163,6 +184,7 @@ text-chunker (Rust CLI)
 chunk-embed (Python CLI)
     │
     ├── parse.py    → validate JSON, produce ChunkData objects
+    ├── split.py    → sentence splitting via Sentenza CLI
     ├── embed.py    → BGE-M3 encoding via sentence-transformers
     ├── store.py    → pgvector storage + cosine similarity search
     ├── format.py   → human-readable and JSON output formatters
@@ -182,6 +204,9 @@ uv run pytest -m "not integration and not slow"
 createdb chunk_embed_test
 psql chunk_embed_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
 uv run pytest -m integration
+
+# Sentenza tests (needs sentenza binary in PATH)
+uv run pytest -m sentenza
 
 # Model tests (downloads ~2GB on first run)
 uv run pytest -m slow

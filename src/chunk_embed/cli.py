@@ -10,6 +10,7 @@ from pgvector.psycopg import register_vector
 from chunk_embed.embed import BgeM3Embedder, embed_chunks
 from chunk_embed.format import format_results_human, format_results_json
 from chunk_embed.parse import parse_chunks, ParseError
+from chunk_embed.split import split_chunks
 from chunk_embed.store import ensure_schema, upsert_document, insert_chunks, search_chunks
 
 
@@ -29,7 +30,9 @@ def main() -> None:
     help="PostgreSQL connection string",
 )
 @click.option("--dry-run", is_flag=True, help="Parse and embed without writing to DB")
-def ingest(input_path: str, source: str | None, batch_size: int, database_url: str, dry_run: bool) -> None:
+@click.option("--lang", default="en", help="ISO 639-1 language code for sentence splitting")
+@click.option("--no-split", is_flag=True, help="Disable sentence splitting")
+def ingest(input_path: str, source: str | None, batch_size: int, database_url: str, dry_run: bool, lang: str, no_split: bool) -> None:
     """Ingest text-chunker JSON into pgvector."""
     if input_path == "-":
         if source is None:
@@ -50,8 +53,13 @@ def ingest(input_path: str, source: str | None, batch_size: int, database_url: s
 
     click.echo(f"Parsed {chunks_input.total_chunks} chunks ({chunks_input.mode} mode)")
 
+    chunks = chunks_input.chunks
+    if not no_split:
+        chunks = split_chunks(chunks, lang)
+        click.echo(f"Split into {len(chunks)} sentence chunks")
+
     embedder = BgeM3Embedder()
-    embeddings = embed_chunks(chunks_input.chunks, embedder, batch_size=batch_size)
+    embeddings = embed_chunks(chunks, embedder, batch_size=batch_size)
     click.echo(f"Embedded {len(embeddings)} chunks")
 
     if dry_run:
@@ -62,7 +70,7 @@ def ingest(input_path: str, source: str | None, batch_size: int, database_url: s
         register_vector(conn)
         ensure_schema(conn)
         doc_id = upsert_document(conn, source, chunks_input.mode, chunks_input.total_chunks)
-        insert_chunks(conn, doc_id, chunks_input.chunks, embeddings)
+        insert_chunks(conn, doc_id, chunks, embeddings)
         conn.commit()
 
     click.echo(f"Stored document {doc_id} with {len(embeddings)} chunks")

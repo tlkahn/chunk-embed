@@ -29,6 +29,7 @@ dev = [
 markers = [
     "integration: requires PostgreSQL with pgvector",
     "slow: loads real embedding model (~2GB download)",
+    "sentenza: requires sentenza binary in PATH",
 ]
 testpaths = ["tests"]
 

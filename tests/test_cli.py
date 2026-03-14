@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 from chunk_embed.cli import main
 from chunk_embed.models import SearchResult
+from chunk_embed.split import split_chunks
 from tests.conftest import MockEmbedder
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -92,6 +93,41 @@ def test_cli_file_input_infers_source(runner, mock_deps, tmp_path):
 def test_cli_invalid_json(runner, mock_deps):
     result = runner.invoke(main, ["ingest", "--source", "x.md"], input="not json {{{")
     assert result.exit_code == 1
+
+
+def test_cli_help_shows_lang_and_no_split(runner):
+    result = runner.invoke(main, ["ingest", "--help"])
+    assert "--lang" in result.output
+    assert "--no-split" in result.output
+
+
+def test_cli_default_lang_is_en(runner, mock_deps, tmp_path):
+    src = tmp_path / "chunks.json"
+    src.write_text((FIXTURES / "sample_chunks.json").read_text())
+    with patch("chunk_embed.cli.split_chunks", wraps=split_chunks) as mock_split:
+        result = runner.invoke(main, ["ingest", str(src)])
+        assert result.exit_code == 0, result.output
+        mock_split.assert_called_once()
+        assert mock_split.call_args[0][1] == "en"
+
+
+def test_cli_lang_de(runner, mock_deps, tmp_path):
+    src = tmp_path / "chunks.json"
+    src.write_text((FIXTURES / "sample_chunks.json").read_text())
+    with patch("chunk_embed.cli.split_chunks", wraps=split_chunks) as mock_split:
+        result = runner.invoke(main, ["ingest", str(src), "--lang", "de"])
+        assert result.exit_code == 0, result.output
+        mock_split.assert_called_once()
+        assert mock_split.call_args[0][1] == "de"
+
+
+def test_cli_no_split_skips_split_chunks(runner, mock_deps, tmp_path):
+    src = tmp_path / "chunks.json"
+    src.write_text((FIXTURES / "sample_chunks.json").read_text())
+    with patch("chunk_embed.cli.split_chunks") as mock_split:
+        result = runner.invoke(main, ["ingest", str(src), "--no-split"])
+        assert result.exit_code == 0, result.output
+        mock_split.assert_not_called()
 
 
 def test_cli_dry_run(runner, tmp_path):
