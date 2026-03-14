@@ -1,0 +1,33 @@
+{
+  "total_chunks": 3,
+  "mode": "document",
+  "chunks": [
+    {
+      "text": "# Introduction",
+      "chunk_type": "heading",
+      "heading_context": ["Introduction"],
+      "heading_level": 1,
+      "page_number": null,
+      "source_line_start": 1,
+      "source_line_end": 1
+    },
+    {
+      "text": "This is a paragraph about text chunking.",
+      "chunk_type": "paragraph",
+      "heading_context": ["Introduction"],
+      "heading_level": null,
+      "page_number": null,
+      "source_line_start": 3,
+      "source_line_end": 3
+    },
+    {
+      "text": "- Item one\n- Item two",
+      "chunk_type": "list_item",
+      "heading_context": ["Introduction"],
+      "heading_level": null,
+      "page_number": null,
+      "source_line_start": 5,
+      "source_line_end": 6
+    }
+  ]
+}

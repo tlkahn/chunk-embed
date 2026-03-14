@@ -1,0 +1,24 @@
+{
+  "total_chunks": 2,
+  "mode": "per_page",
+  "chunks": [
+    {
+      "text": "# Page One Title",
+      "chunk_type": "heading",
+      "heading_context": ["Page One Title"],
+      "heading_level": 1,
+      "page_number": 1,
+      "source_line_start": 1,
+      "source_line_end": 1
+    },
+    {
+      "text": "Content on page two.",
+      "chunk_type": "paragraph",
+      "heading_context": ["Page One Title"],
+      "heading_level": null,
+      "page_number": 2,
+      "source_line_start": 5,
+      "source_line_end": 5
+    }
+  ]
+}
