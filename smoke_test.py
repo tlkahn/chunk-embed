@@ -1,7 +1,7 @@
 """
 Smoke test for chunk-embed: end-to-end with real BGE-M3 model and PostgreSQL.
 
-Exercises the full pipeline: parse → embed → store → verify via SQL.
+Exercises the full pipeline: parse → split → embed → store → verify via SQL.
 
 Requires:
     - Local BGE-M3 model at ./local_bge_m3/BAAI/bge-m3
@@ -20,6 +20,7 @@ import psycopg
 from pgvector.psycopg import register_vector
 
 from chunk_embed.parse import parse_chunks
+from chunk_embed.split import split_chunks
 from chunk_embed.embed import BgeM3Embedder, embed_chunks
 from chunk_embed.store import ensure_schema, upsert_document, insert_chunks, search_chunks
 
@@ -162,24 +163,34 @@ def run_smoke_test():
         parsed = parse_chunks(raw)
         check(f"Parse {label}", parsed.total_chunks == doc["total_chunks"])
 
-        embeddings = embed_chunks(parsed.chunks, embedder, batch_size=32)
-        check(f"Embed {label} count", len(embeddings) == len(parsed.chunks))
+        chunks = split_chunks(parsed.chunks, "en")
+        if len(chunks) != parsed.total_chunks:
+            print(f"  Split: {parsed.total_chunks} → {len(chunks)} chunks")
+
+        embeddings = embed_chunks(chunks, embedder, batch_size=32)
+        check(f"Embed {label} count", len(embeddings) == len(chunks))
         check(f"Embed {label} shape", all(v.shape == (1024,) for v in embeddings))
         check(f"Embed {label} finite", all(np.all(np.isfinite(v)) for v in embeddings))
         norms = [float(np.linalg.norm(v)) for v in embeddings]
         check(f"Embed {label} normalized", all(abs(n - 1.0) < 1e-4 for n in norms),
               f"norms={norms}")
 
-        all_results[label] = (parsed, embeddings, source)
+        all_results[label] = (parsed, chunks, embeddings, source)
 
     # --- 3. Semantic similarity sanity check ---
     print("\n--- Semantic similarity ---")
-    sanskrit_embs = all_results["sanskrit"][1]
+
+    def _find_emb(chunks, embs, substr):
+        """Find embedding for the first chunk containing substr."""
+        return embs[next(i for i, c in enumerate(chunks) if substr in c.text)]
+
+    sa_chunks, sa_embs = all_results["sanskrit"][1], all_results["sanskrit"][2]
+    code_chunks, code_embs_arr = all_results["code"][1], all_results["code"][2]
     # The Sanskrit verse and its English translation should be more similar to each other
     # than the Sanskrit verse is to the code snippet
-    sanskrit_verse = sanskrit_embs[1]  # Devanagari verse
-    english_trans = sanskrit_embs[2]   # English translation
-    code_emb = all_results["code"][1][1]  # Python code block
+    sanskrit_verse = _find_emb(sa_chunks, sa_embs, "नासदासीन्नो")
+    english_trans = _find_emb(sa_chunks, sa_embs, "neither non-existence")
+    code_emb = _find_emb(code_chunks, code_embs_arr, "SentenceTransformer")
 
     sim_verse_trans = float(np.dot(sanskrit_verse, english_trans))
     sim_verse_code = float(np.dot(sanskrit_verse, code_emb))
@@ -195,15 +206,15 @@ def run_smoke_test():
         register_vector(conn)
         ensure_schema(conn)
 
-        for label, (parsed, embeddings, source) in all_results.items():
+        for label, (parsed, chunks, embeddings, source) in all_results.items():
             doc_id = upsert_document(conn, source, parsed.mode, parsed.total_chunks)
-            insert_chunks(conn, doc_id, parsed.chunks, embeddings)
+            insert_chunks(conn, doc_id, chunks, embeddings)
 
         # Verify row counts
         doc_count = conn.execute("SELECT count(*) FROM documents").fetchone()[0]
         chunk_count = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
         check("Document count", doc_count == 3, f"got {doc_count}")
-        total_expected = sum(d["total_chunks"] for _, d, _ in test_cases)
+        total_expected = sum(len(all_results[l][1]) for l, _, _ in test_cases)
         check("Chunk count", chunk_count == total_expected, f"got {chunk_count}, expected {total_expected}")
 
         # Verify Unicode round-trip
@@ -219,7 +230,7 @@ def run_smoke_test():
             ("/test/nasadiya.md",),
         ).fetchone()
         stored = np.array(row[0], dtype=np.float32)
-        original = all_results["sanskrit"][1][0]
+        original = all_results["sanskrit"][2][0]
         check("Vector round-trip", np.allclose(stored, original, atol=1e-5))
 
         # Verify per-page mode stored correctly
@@ -262,8 +273,8 @@ def run_smoke_test():
             "SELECT id FROM documents WHERE source_path = %s", ("/test/nasadiya.md",)
         ).fetchone()[0]
         new_id = upsert_document(conn, "/test/nasadiya.md", "document", 1)
-        single_chunk = all_results["sanskrit"][0].chunks[:1]
-        single_emb = all_results["sanskrit"][1][:1]
+        single_chunk = all_results["sanskrit"][1][:1]
+        single_emb = all_results["sanskrit"][2][:1]
         insert_chunks(conn, new_id, single_chunk, single_emb)
 
         check("Re-ingest new ID", new_id != old_id)

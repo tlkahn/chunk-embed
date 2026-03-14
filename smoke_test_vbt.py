@@ -2,7 +2,7 @@
 VBT smoke test for chunk-embed: cross-lingual semantic search with Vijñāna Bhairava Tantra.
 
 Exercises the full pipeline with real Sanskrit/English tantric corpus data:
-  ingest Sanskrit verses → ingest English translations → cross-lingual retrieval
+  ingest Sanskrit verses → sentence split → ingest English translations → cross-lingual retrieval
   → thematic ranking → similarity ordering → filter verification
 
 Data sourced from ~/Projects/sa-embedding/vbt_corpus.py (168 VBT verses).
@@ -25,6 +25,7 @@ import psycopg
 from pgvector.psycopg import register_vector
 
 from chunk_embed.parse import parse_chunks
+from chunk_embed.split import split_chunks
 from chunk_embed.embed import BgeM3Embedder, embed_chunks
 from chunk_embed.store import ensure_schema, upsert_document, insert_chunks, search_chunks
 
@@ -202,18 +203,35 @@ def run_vbt_smoke_test():
         parsed = parse_chunks(raw)
         check(f"Parse {label}", parsed.total_chunks == doc["total_chunks"])
 
-        embeddings = embed_chunks(parsed.chunks, embedder, batch_size=32)
-        check(f"Embed {label} count", len(embeddings) == len(parsed.chunks))
+        chunks = split_chunks(parsed.chunks, "en")
+        if len(chunks) != parsed.total_chunks:
+            print(f"  Split: {parsed.total_chunks} → {len(chunks)} chunks")
+
+        embeddings = embed_chunks(chunks, embedder, batch_size=32)
+        check(f"Embed {label} count", len(embeddings) == len(chunks))
         norms = [float(np.linalg.norm(v)) for v in embeddings]
         check(f"Embed {label} normalized", all(abs(n - 1.0) < 1e-4 for n in norms),
               f"norms min={min(norms):.4f} max={max(norms):.4f}")
 
-        all_results[label] = (parsed, embeddings, source)
+        all_results[label] = (parsed, chunks, embeddings, source)
 
     # --- 3. Cross-lingual similarity sanity checks ---
     print("\n--- Cross-lingual similarity (embedding-level) ---")
-    sa_embs = all_results["sanskrit"][1]
-    en_embs = all_results["english"][1]
+
+    # Build verse-aligned embedding arrays (works with or without sentence splitting)
+    def _verse_embs(chunks, embs, text_key):
+        """Build embedding array aligned to VERSE_KEYS order."""
+        result = []
+        for key in VERSE_KEYS:
+            verse_text = VERSES[key][text_key]
+            idx = next(i for i, c in enumerate(chunks) if c.text in verse_text or verse_text == c.text)
+            result.append(embs[idx])
+        return np.array(result)
+
+    sa_chunks, sa_embs_raw = all_results["sanskrit"][1], all_results["sanskrit"][2]
+    en_chunks, en_embs_raw = all_results["english"][1], all_results["english"][2]
+    sa_embs = _verse_embs(sa_chunks, sa_embs_raw, "sa")
+    en_embs = _verse_embs(en_chunks, en_embs_raw, "en")
 
     # Same verse in Sanskrit and English should be more similar
     # than two unrelated verses
@@ -252,21 +270,26 @@ def run_vbt_smoke_test():
         register_vector(conn)
         ensure_schema(conn)
 
-        for label, (parsed, embeddings, source) in all_results.items():
+        for label, (parsed, chunks, embeddings, source) in all_results.items():
             doc_id = upsert_document(conn, source, parsed.mode, parsed.total_chunks)
-            insert_chunks(conn, doc_id, parsed.chunks, embeddings)
+            insert_chunks(conn, doc_id, chunks, embeddings)
 
         doc_count = conn.execute("SELECT count(*) FROM documents").fetchone()[0]
         chunk_count = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
         check("Document count", doc_count == 2, f"got {doc_count}")
-        check("Chunk count", chunk_count == len(VERSES) * 2,
-              f"got {chunk_count}, expected {len(VERSES) * 2}")
+        total_expected = sum(len(all_results[l][1]) for l, _, _ in docs)
+        check("Chunk count", chunk_count == total_expected,
+              f"got {chunk_count}, expected {total_expected}")
 
         # Unicode round-trip: verify Devanagari survives storage
         row = conn.execute(
             "SELECT text FROM chunks WHERE text LIKE '%भैरव उवाच%'"
         ).fetchone()
         check("Devanagari round-trip", row is not None and "भैरव उवाच" in row[0])
+
+        def _from_verse(result_text, verse_text):
+            """Check if result_text came from verse_text (handles sentence splitting)."""
+            return result_text in verse_text or verse_text in result_text
 
         # --- 5. Cross-lingual retrieval via search_chunks ---
         print("\n--- Cross-lingual retrieval ---")
@@ -278,7 +301,7 @@ def run_vbt_smoke_test():
         top_texts = [r.text for r in results[:3]]
         breath_sa_text = VERSES["breath_ascending"]["sa"]
         check("Retrieval: 'prāṇa breath' → breath verse in top 3",
-              any(breath_sa_text in t for t in top_texts),
+              any(_from_verse(t, breath_sa_text) for t in top_texts),
               f"top 3 texts: {[t[:40] for t in top_texts]}")
 
         query_sound = "unstruck sound flowing river inner ear nāda"
@@ -287,7 +310,7 @@ def run_vbt_smoke_test():
         top_texts = [r.text for r in results[:3]]
         sound_sa_text = VERSES["sound_anahata"]["sa"]
         check("Retrieval: 'anāhata nāda' → sound verse in top 3",
-              any(sound_sa_text in t for t in top_texts),
+              any(_from_verse(t, sound_sa_text) for t in top_texts),
               f"top 3 texts: {[t[:40] for t in top_texts]}")
 
         query_nondual = "I am Shiva all-pervading supreme lord"
@@ -296,7 +319,7 @@ def run_vbt_smoke_test():
         top_texts = [r.text for r in results[:3]]
         nondual_sa_text = VERSES["nondual_i_am_shiva"]["sa"]
         check("Retrieval: 'I am Śiva' → nondual verse in top 3",
-              any(nondual_sa_text in t for t in top_texts),
+              any(_from_verse(t, nondual_sa_text) for t in top_texts),
               f"top 3 texts: {[t[:40] for t in top_texts]}")
 
         query_void = "body emptiness void thought-free śūnyatā"
@@ -306,7 +329,7 @@ def run_vbt_smoke_test():
         void_sa_text_1 = VERSES["void_body_sky"]["sa"]
         void_sa_text_2 = VERSES["void_triple"]["sa"]
         check("Retrieval: 'śūnyatā void' → void verse in top 5",
-              any(void_sa_text_1 in t or void_sa_text_2 in t for t in top_texts),
+              any(_from_verse(t, void_sa_text_1) or _from_verse(t, void_sa_text_2) for t in top_texts),
               f"top 5 texts: {[t[:40] for t in top_texts]}")
 
         # --- 6. Sanskrit query → English translation retrieval ---
@@ -319,7 +342,7 @@ def run_vbt_smoke_test():
         top_texts = [r.text for r in results[:3]]
         breath_en_text = VERSES["breath_ascending"]["en"]
         check("Sa→En retrieval: 'प्राण जीव' → breath translation in top 3",
-              any(breath_en_text in t for t in top_texts),
+              any(_from_verse(t, breath_en_text) for t in top_texts),
               f"top 3 texts: {[t[:50] for t in top_texts]}")
 
         query_sa_sound = "अनाहत शब्द नाद ब्रह्म"
@@ -329,7 +352,7 @@ def run_vbt_smoke_test():
         sound_en_text = VERSES["sound_anahata"]["en"]
         sound_en_text_2 = VERSES["sound_instruments"]["en"]
         check("Sa→En retrieval: 'अनाहत शब्द' → sound translation in top 5",
-              any(sound_en_text in t or sound_en_text_2 in t for t in top_texts),
+              any(_from_verse(t, sound_en_text) or _from_verse(t, sound_en_text_2) for t in top_texts),
               f"top 5 texts: {[t[:50] for t in top_texts]}")
 
         query_sa_void = "शून्य निर्विकल्प देह"
@@ -339,20 +362,20 @@ def run_vbt_smoke_test():
         void_en_1 = VERSES["void_body_sky"]["en"]
         void_en_2 = VERSES["void_triple"]["en"]
         check("Sa→En retrieval: 'शून्य निर्विकल्प' → void translation in top 5",
-              any(void_en_1 in t or void_en_2 in t for t in top_texts),
+              any(_from_verse(t, void_en_1) or _from_verse(t, void_en_2) for t in top_texts),
               f"top 5 texts: {[t[:50] for t in top_texts]}")
 
         # Full Sanskrit verse as query → its own English translation should rank #1
         q_emb = embedder.embed([VERSES["nondual_i_am_shiva"]["sa"]])[0]
         results = search_chunks(conn, q_emb, top_k=3, source_path="/test/vbt_english.md")
         check("Sa→En retrieval: full nondual verse → own translation is #1",
-              results[0].text == VERSES["nondual_i_am_shiva"]["en"],
+              _from_verse(results[0].text, VERSES["nondual_i_am_shiva"]["en"]),
               f"got: {results[0].text[:60]}")
 
         q_emb = embedder.embed([VERSES["bliss_union"]["sa"]])[0]
         results = search_chunks(conn, q_emb, top_k=3, source_path="/test/vbt_english.md")
         check("Sa→En retrieval: full bliss verse → own translation is #1",
-              results[0].text == VERSES["bliss_union"]["en"],
+              _from_verse(results[0].text, VERSES["bliss_union"]["en"]),
               f"got: {results[0].text[:60]}")
 
         # --- 7. Sanskrit query → Sanskrit (monolingual thematic retrieval) ---
@@ -364,7 +387,7 @@ def run_vbt_smoke_test():
         results = search_chunks(conn, q_emb, top_k=5, source_path="/test/vbt_sanskrit.md")
         top_texts = [r.text for r in results[:3]]
         check("Sa→Sa: 'प्राण जीव श्वास मरुत' → breath verses in top 3",
-              any(VERSES["breath_ascending"]["sa"] in t or VERSES["breath_middle"]["sa"] in t
+              any(_from_verse(t, VERSES["breath_ascending"]["sa"]) or _from_verse(t, VERSES["breath_middle"]["sa"])
                   for t in top_texts),
               f"top 3: {[t[:40] for t in top_texts]}")
 
@@ -373,7 +396,7 @@ def run_vbt_smoke_test():
         results = search_chunks(conn, q_emb, top_k=5, source_path="/test/vbt_sanskrit.md")
         top_texts = [r.text for r in results[:3]]
         check("Sa→Sa: 'शब्द नाद अनाहत तन्त्री' → sound verses in top 3",
-              any(VERSES["sound_anahata"]["sa"] in t or VERSES["sound_instruments"]["sa"] in t
+              any(_from_verse(t, VERSES["sound_anahata"]["sa"]) or _from_verse(t, VERSES["sound_instruments"]["sa"])
                   for t in top_texts),
               f"top 3: {[t[:40] for t in top_texts]}")
 
@@ -382,7 +405,7 @@ def run_vbt_smoke_test():
         results = search_chunks(conn, q_emb, top_k=5, source_path="/test/vbt_sanskrit.md")
         top_texts = [r.text for r in results[:3]]
         check("Sa→Sa: 'शून्य निर्विकल्प' → void verses in top 3",
-              any(VERSES["void_body_sky"]["sa"] in t or VERSES["void_triple"]["sa"] in t
+              any(_from_verse(t, VERSES["void_body_sky"]["sa"]) or _from_verse(t, VERSES["void_triple"]["sa"])
                   for t in top_texts),
               f"top 3: {[t[:40] for t in top_texts]}")
 
@@ -390,10 +413,10 @@ def run_vbt_smoke_test():
         # breath_ascending → breath_middle should rank above "भैरव उवाच"
         q_emb = embedder.embed([VERSES["breath_ascending"]["sa"]])[0]
         results = search_chunks(conn, q_emb, top_k=15, source_path="/test/vbt_sanskrit.md")
-        non_self = [r for r in results if r.text != VERSES["breath_ascending"]["sa"]]
+        non_self = [r for r in results if not _from_verse(r.text, VERSES["breath_ascending"]["sa"])]
         non_self_texts = [r.text for r in non_self]
-        breath_mid_rank = next((i for i, t in enumerate(non_self_texts) if t == VERSES["breath_middle"]["sa"]), None)
-        dialogue_rank = next((i for i, t in enumerate(non_self_texts) if t == VERSES["dialogue"]["sa"]), len(non_self_texts))
+        breath_mid_rank = next((i for i, t in enumerate(non_self_texts) if _from_verse(t, VERSES["breath_middle"]["sa"])), None)
+        dialogue_rank = next((i for i, t in enumerate(non_self_texts) if _from_verse(t, VERSES["dialogue"]["sa"])), len(non_self_texts))
         check("Sa→Sa: breath verse → breath_middle ranks above dialogue",
               breath_mid_rank is not None and breath_mid_rank < dialogue_rank,
               f"breath_middle rank={breath_mid_rank}, dialogue rank={dialogue_rank}")
@@ -401,10 +424,10 @@ def run_vbt_smoke_test():
         # void_triple → void_body_sky should rank above dialogue
         q_emb = embedder.embed([VERSES["void_triple"]["sa"]])[0]
         results = search_chunks(conn, q_emb, top_k=15, source_path="/test/vbt_sanskrit.md")
-        non_self = [r for r in results if r.text != VERSES["void_triple"]["sa"]]
+        non_self = [r for r in results if not _from_verse(r.text, VERSES["void_triple"]["sa"])]
         non_self_texts = [r.text for r in non_self]
-        void_body_rank = next((i for i, t in enumerate(non_self_texts) if t == VERSES["void_body_sky"]["sa"]), None)
-        dialogue_rank = next((i for i, t in enumerate(non_self_texts) if t == VERSES["dialogue"]["sa"]), len(non_self_texts))
+        void_body_rank = next((i for i, t in enumerate(non_self_texts) if _from_verse(t, VERSES["void_body_sky"]["sa"])), None)
+        dialogue_rank = next((i for i, t in enumerate(non_self_texts) if _from_verse(t, VERSES["dialogue"]["sa"])), len(non_self_texts))
         check("Sa→Sa: void_triple → void_body_sky ranks above dialogue",
               void_body_rank is not None and void_body_rank < dialogue_rank,
               f"void_body rank={void_body_rank}, dialogue rank={dialogue_rank}")
@@ -412,9 +435,9 @@ def run_vbt_smoke_test():
         # Dialogue marker should NOT be top non-self for any thematic query
         q_emb = embedder.embed([VERSES["bliss_union"]["sa"]])[0]
         results = search_chunks(conn, q_emb, top_k=15, source_path="/test/vbt_sanskrit.md")
-        non_self = [r for r in results if r.text != VERSES["bliss_union"]["sa"]]
+        non_self = [r for r in results if not _from_verse(r.text, VERSES["bliss_union"]["sa"])]
         check("Sa→Sa: bliss verse → dialogue is NOT top non-self",
-              non_self[0].text != VERSES["dialogue"]["sa"],
+              not _from_verse(non_self[0].text, VERSES["dialogue"]["sa"]),
               f"top non-self: {non_self[0].text[:40]}")
 
         # --- 8. Cross-document retrieval ---
@@ -465,11 +488,11 @@ def run_vbt_smoke_test():
         breath_emb = sa_embs[breath_idx]
         results = search_chunks(conn, breath_emb, top_k=15, source_path="/test/vbt_sanskrit.md")
 
-        breath_texts = {VERSES["breath_ascending"]["sa"], VERSES["breath_middle"]["sa"]}
+        breath_texts = [VERSES["breath_ascending"]["sa"], VERSES["breath_middle"]["sa"]]
         dialogue_text = VERSES["dialogue"]["sa"]
 
-        breath_ranks = [i for i, r in enumerate(results) if r.text in breath_texts]
-        dialogue_ranks = [i for i, r in enumerate(results) if r.text == dialogue_text]
+        breath_ranks = [i for i, r in enumerate(results) if any(_from_verse(r.text, bt) for bt in breath_texts)]
+        dialogue_ranks = [i for i, r in enumerate(results) if _from_verse(r.text, dialogue_text)]
 
         if breath_ranks and dialogue_ranks:
             check("Ranking: breath verses rank above dialogue marker",
