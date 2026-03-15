@@ -145,3 +145,15 @@ def search_chunks(
         ))
 
     return results
+
+
+def get_distinct_sources(conn: psycopg.Connection) -> list[str]:
+    return [r[0] for r in conn.execute(
+        "SELECT DISTINCT source_path FROM documents ORDER BY source_path"
+    ).fetchall()]
+
+
+def get_distinct_chunk_types(conn: psycopg.Connection) -> list[str]:
+    return [r[0] for r in conn.execute(
+        "SELECT DISTINCT chunk_type FROM chunks ORDER BY chunk_type"
+    ).fetchall()]

@@ -342,6 +342,29 @@ class QueryWorker(QThread):
         self.finished.emit(results)
 
 
+class FilterOptionsWorker(QThread):
+    """Fetch distinct source paths and chunk types from the database."""
+
+    finished = Signal(list, list)  # sources, chunk_types
+    error = Signal(str)
+
+    def __init__(self, database_url: str) -> None:
+        super().__init__()
+        self.database_url = database_url
+
+    def run(self) -> None:
+        try:
+            import psycopg
+            from chunk_embed.store import get_distinct_sources, get_distinct_chunk_types
+
+            with psycopg.connect(self.database_url, connect_timeout=3) as conn:
+                sources = get_distinct_sources(conn)
+                chunk_types = get_distinct_chunk_types(conn)
+            self.finished.emit(sources, chunk_types)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 # ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
@@ -352,6 +375,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("chunk-embed")
         self.setMinimumSize(QSize(720, 560))
         self._worker: QThread | None = None
+        self._filter_worker: FilterOptionsWorker | None = None
         self._last_results: list[SearchResult] = []
 
         # Central widget
@@ -448,6 +472,7 @@ class MainWindow(QMainWindow):
                 self.tabs.setCurrentIndex(1)  # jump to Ingest on first launch
             if hasattr(self, "status_bar"):
                 self.status_bar.showMessage("All dependencies satisfied")
+            self._refresh_filters()
         else:
             self.tabs.setCurrentIndex(0)  # stay on Setup
             if hasattr(self, "status_bar"):
@@ -584,6 +609,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.hide()
         self.ingest_btn.setEnabled(True)
         self._cleanup_worker()
+        self._refresh_filters()
 
     def _on_ingest_error(self, msg: str) -> None:
         self.ingest_log.append(f"ERROR: {msg}")
@@ -591,6 +617,49 @@ class MainWindow(QMainWindow):
         self.progress_bar.hide()
         self.ingest_btn.setEnabled(True)
         self._cleanup_worker()
+
+    # ---- Filter dropdowns ----
+
+    @staticmethod
+    def _get_filter_value(combo: QComboBox) -> str:
+        text = combo.currentText().strip()
+        return "" if text == "(all)" else text
+
+    def _refresh_filters(self) -> None:
+        if self._filter_worker is not None:
+            return  # already running
+        self._filter_worker = FilterOptionsWorker(self.db_url.text())
+        self._filter_worker.finished.connect(self._on_filters_loaded)
+        self._filter_worker.error.connect(self._on_filters_error)
+        self._filter_worker.finished.connect(self._cleanup_filter_worker)
+        self._filter_worker.error.connect(self._cleanup_filter_worker)
+        self._filter_worker.start()
+
+    def _on_filters_loaded(self, sources: list, chunk_types: list) -> None:
+        self._repopulate_combo(self.source_filter, sources)
+        self._repopulate_combo(self.chunk_type_filter, chunk_types)
+
+    @staticmethod
+    def _repopulate_combo(combo: QComboBox, items: list[str]) -> None:
+        prev = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("(all)")
+        combo.addItems(items)
+        idx = combo.findText(prev)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        else:
+            combo.setCurrentIndex(0)
+        combo.blockSignals(False)
+
+    def _on_filters_error(self, msg: str) -> None:
+        logger.warning("Failed to load filter options: %s", msg)
+
+    def _cleanup_filter_worker(self) -> None:
+        if self._filter_worker is not None:
+            self._filter_worker.wait()
+            self._filter_worker = None
 
     # ---- Search tab ----
 
@@ -620,13 +689,15 @@ class MainWindow(QMainWindow):
         filt_row.addWidget(self.top_k_spin)
 
         filt_row.addWidget(QLabel("Source:"))
-        self.source_filter = QLineEdit()
-        self.source_filter.setPlaceholderText("(all)")
+        self.source_filter = QComboBox()
+        self.source_filter.setEditable(True)
+        self.source_filter.addItem("(all)")
         filt_row.addWidget(self.source_filter)
 
         filt_row.addWidget(QLabel("Type:"))
-        self.chunk_type_filter = QLineEdit()
-        self.chunk_type_filter.setPlaceholderText("(all)")
+        self.chunk_type_filter = QComboBox()
+        self.chunk_type_filter.setEditable(True)
+        self.chunk_type_filter.addItem("(all)")
         filt_row.addWidget(self.chunk_type_filter)
 
         filt_row.addWidget(QLabel("Threshold:"))
@@ -686,8 +757,8 @@ class MainWindow(QMainWindow):
             query_text=query_text,
             database_url=self.db_url.text(),
             top_k=self.top_k_spin.value(),
-            source_filter=self.source_filter.text().strip(),
-            chunk_type_filter=self.chunk_type_filter.text().strip(),
+            source_filter=self._get_filter_value(self.source_filter),
+            chunk_type_filter=self._get_filter_value(self.chunk_type_filter),
             threshold=self.threshold_spin.value(),
         )
         self._worker.log.connect(lambda msg: self.status_bar.showMessage(msg))
