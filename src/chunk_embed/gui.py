@@ -789,7 +789,6 @@ class MainWindow(QMainWindow):
             text_font = QFont()
             text_font.setPointSizeF(text_font.pointSizeF() * 1.05)
             text_item.setFont(text_font)
-            text_item.setForeground(QColor(23, 23, 23))
             self.results_table.setItem(i, 3, text_item)
 
             heading_item = QTableWidgetItem(" > ".join(r.heading_context))
