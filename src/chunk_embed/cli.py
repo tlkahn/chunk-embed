@@ -19,6 +19,8 @@ from chunk_embed.store import ensure_schema, upsert_document, insert_chunks, sea
 def main() -> None:
     """Embed text-chunker JSON output into pgvector for semantic search."""
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    from chunk_embed._paths import prepend_bundled_bin_to_path
+    prepend_bundled_bin_to_path()
 
 
 @main.command()

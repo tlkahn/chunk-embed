@@ -42,3 +42,33 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# ---------------------------------------------------------------------------
+# Briefcase packaging (macOS .app / .dmg)
+# ---------------------------------------------------------------------------
+
+[tool.briefcase]
+project_name = "Chunk Embed"
+bundle = "dev.chunkembed"
+version = "0.1.0"
+url = "https://github.com/tlkahn/chunk-embed"
+license.file = "LICENSE"
+author = "tlkahn"
+
+[tool.briefcase.app.chunk_embed]
+formal_name = "Chunk Embed"
+description = "Semantic search for text chunks using BGE-M3 and pgvector"
+sources = ["src/chunk_embed"]
+requires = [
+    "click>=8.1",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3",
+    "sentence-transformers>=3.0",
+    "numpy>=1.26",
+    "modelscope>=1.34.0",
+    "tqdm>=4.66",
+    "pyside6>=6.7",
+]
+
+[tool.briefcase.app.chunk_embed.macOS]
+resources = ["resources/bin"]
