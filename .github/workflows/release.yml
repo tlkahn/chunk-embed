@@ -1,0 +1,74 @@
+name: Build and Release macOS .dmg
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-dmg:
+    runs-on: macos-14  # Apple Silicon runner
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Rust toolchain (for text-chunker & sentenza) ──────────────
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache Rust builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: rust-${{ runner.os }}-${{ hashFiles('scripts/build_rust_binaries.sh') }}
+
+      - name: Build Rust binaries
+        run: ./scripts/build_rust_binaries.sh
+
+      # ── Python + Briefcase ────────────────────────────────────────
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Briefcase
+        run: pip install briefcase
+
+      - name: Create macOS app
+        run: briefcase create macOS --no-input
+
+      - name: Build macOS app
+        run: briefcase build macOS --no-input
+
+      - name: Package .dmg (ad-hoc signed)
+        run: briefcase package macOS --adhoc-sign --no-input
+
+      # ── Upload to GitHub Release ──────────────────────────────────
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload .dmg to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.dmg
+          body: |
+            ## Chunk Embed ${{ steps.version.outputs.version }}
+
+            ### Installation
+
+            1. Download `Chunk Embed-${{ steps.version.outputs.version }}.dmg` below
+            2. Open the `.dmg` and drag **Chunk Embed** into Applications
+            3. On first launch, macOS will block the app — right-click the app and choose **Open**, or go to **System Settings > Privacy & Security** and click **Open Anyway**
+
+            ### Prerequisites
+
+            - PostgreSQL with [pgvector](https://github.com/pgvector/pgvector)
+            - Internet connection on first launch (downloads BGE-M3 model, ~2 GB)
+          generate_release_notes: true
