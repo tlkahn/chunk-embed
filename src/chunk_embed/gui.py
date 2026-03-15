@@ -9,8 +9,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, QSize
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QObject, QThread, Signal, QSize, QUrl
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -38,6 +38,26 @@ from chunk_embed.embed import MODEL_DIR
 from chunk_embed.models import SearchResult
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Log forwarding to Qt
+# ---------------------------------------------------------------------------
+
+class _LogSignalBridge(QObject):
+    """Thin QObject that owns a signal for cross-thread log delivery."""
+    message = Signal(str)
+
+
+class QtLogHandler(logging.Handler):
+    """Logging handler that emits formatted records via a Qt signal."""
+
+    def __init__(self, bridge: _LogSignalBridge) -> None:
+        super().__init__()
+        self._bridge = bridge
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self._bridge.message.emit(self.format(record))
 
 
 # ---------------------------------------------------------------------------
@@ -186,9 +206,23 @@ class IngestWorker(QThread):
             chunks = split_chunks(chunks, self.lang)
             self.log.emit(f"Split into {len(chunks)} sentence chunks")
 
-        # Embed
-        self.log.emit("Loading embedding model…")
-        embedder = BgeM3Embedder()
+        # Embed — install log handler to forward model-loading messages to GUI
+        bridge = _LogSignalBridge()
+        bridge.message.connect(self.log.emit)
+        handler = QtLogHandler(bridge)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        embed_logger = logging.getLogger("chunk_embed.embed")
+        st_logger = logging.getLogger("sentence_transformers")
+        embed_logger.addHandler(handler)
+        st_logger.addHandler(handler)
+        try:
+            self.log.emit("Loading embedding model…")
+            self.progress.emit("Loading model", 0, 0)
+            embedder = BgeM3Embedder()
+        finally:
+            embed_logger.removeHandler(handler)
+            st_logger.removeHandler(handler)
+
         self.log.emit("Embedding chunks…")
 
         def on_embed_progress(done: int, total: int) -> None:
@@ -257,8 +291,20 @@ class QueryWorker(QThread):
         import psycopg
         from pgvector.psycopg import register_vector
 
-        self.log.emit("Loading embedding model…")
-        embedder = BgeM3Embedder()
+        bridge = _LogSignalBridge()
+        bridge.message.connect(self.log.emit)
+        handler = QtLogHandler(bridge)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        embed_logger = logging.getLogger("chunk_embed.embed")
+        st_logger = logging.getLogger("sentence_transformers")
+        embed_logger.addHandler(handler)
+        st_logger.addHandler(handler)
+        try:
+            self.log.emit("Loading embedding model…")
+            embedder = BgeM3Embedder()
+        finally:
+            embed_logger.removeHandler(handler)
+            st_logger.removeHandler(handler)
 
         self.log.emit("Embedding query…")
         query_embedding = embedder.embed([self.query_text])[0]
@@ -498,24 +544,35 @@ class MainWindow(QMainWindow):
         self._worker.error.connect(self._on_ingest_error)
         self._worker.start()
 
+    def _cleanup_worker(self) -> None:
+        """Wait for the worker thread to fully stop before dropping the reference."""
+        if self._worker is not None:
+            self._worker.wait()
+            self._worker = None
+
     def _on_progress(self, stage: str, current: int, total: int) -> None:
-        self.progress_bar.setMaximum(total)
-        self.progress_bar.setValue(current)
-        self.status_bar.showMessage(f"{stage}: {current}/{total}")
+        if total == 0:
+            # Indeterminate / pulsating mode
+            self.progress_bar.setMaximum(0)
+            self.status_bar.showMessage(f"{stage}…")
+        else:
+            self.progress_bar.setMaximum(total)
+            self.progress_bar.setValue(current)
+            self.status_bar.showMessage(f"{stage}: {current}/{total}")
 
     def _on_ingest_done(self, summary: str) -> None:
         self.ingest_log.append(summary)
         self.status_bar.showMessage(summary)
         self.progress_bar.hide()
         self.ingest_btn.setEnabled(True)
-        self._worker = None
+        self._cleanup_worker()
 
     def _on_ingest_error(self, msg: str) -> None:
         self.ingest_log.append(f"ERROR: {msg}")
         self.status_bar.showMessage(f"Error: {msg}")
         self.progress_bar.hide()
         self.ingest_btn.setEnabled(True)
-        self._worker = None
+        self._cleanup_worker()
 
     # ---- Search tab ----
 
@@ -624,7 +681,16 @@ class MainWindow(QMainWindow):
         for i, r in enumerate(results):
             self.results_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
             self.results_table.setItem(i, 1, QTableWidgetItem(f"{r.similarity:.4f}"))
-            self.results_table.setItem(i, 2, QTableWidgetItem(r.source_path))
+
+            source_label = QLabel(
+                f'<a href="#">{r.source_path}:{r.source_line_start}</a>'
+            )
+            source_path = r.source_path
+            source_label.linkActivated.connect(
+                lambda _link, p=source_path: self._open_source(p)
+            )
+            self.results_table.setCellWidget(i, 2, source_label)
+
             self.results_table.setItem(i, 3, QTableWidgetItem(" > ".join(r.heading_context)))
             text_preview = r.text[:300] + "…" if len(r.text) > 300 else r.text
             self.results_table.setItem(i, 4, QTableWidgetItem(text_preview))
@@ -633,13 +699,18 @@ class MainWindow(QMainWindow):
         n = len(results)
         self.status_bar.showMessage(f"{n} result{'s' if n != 1 else ''} found")
         self.export_btn.setEnabled(n > 0)
-        self._worker = None
+        self._cleanup_worker()
+
+    def _open_source(self, source_path: str) -> None:
+        """Open the source file with the OS default application."""
+        p = Path(source_path).resolve()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
 
     def _on_query_error(self, msg: str) -> None:
         self.status_bar.showMessage(f"Error: {msg}")
         self.progress_bar.hide()
         self.query_btn.setEnabled(True)
-        self._worker = None
+        self._cleanup_worker()
 
     def _export_results(self) -> None:
         if not self._last_results:

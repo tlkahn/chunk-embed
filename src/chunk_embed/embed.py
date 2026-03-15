@@ -41,7 +41,7 @@ class BgeM3Embedder:
         return 1024
 
     def embed(self, texts: list[str]) -> np.ndarray:
-        return self._model.encode(texts, normalize_embeddings=True)
+        return self._model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
 
 
 def embed_chunks(
