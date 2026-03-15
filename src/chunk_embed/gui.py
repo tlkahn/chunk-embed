@@ -9,8 +9,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Signal, QSize, QUrl
-from PySide6.QtGui import QColor, QDesktopServices
+from PySide6.QtCore import QEvent, QObject, QThread, Signal, QSize, QUrl, Qt
+from PySide6.QtGui import QColor, QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -101,6 +101,24 @@ def _check_dependencies(database_url: str) -> list[DepStatus]:
         detail=str(MODEL_DIR) if model_ok else f"{MODEL_DIR} not found",
         install_hint="Auto-downloaded on first embed, or manually place in local_bge_m3/",
     ))
+
+    # Editor ($VISUAL / $EDITOR)
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    if editor:
+        editor_path = shutil.which(Path(editor).name)
+        results.append(DepStatus(
+            name="Editor",
+            ok=editor_path is not None,
+            detail=editor or "set but not found in PATH",
+            install_hint="Ensure $VISUAL or $EDITOR points to a valid executable",
+        ))
+    else:
+        results.append(DepStatus(
+            name="Editor",
+            ok=False,
+            detail="$VISUAL and $EDITOR not set — source links open without line positioning",
+            install_hint='export EDITOR=code  (or vim, nvim, emacs, subl, etc.)',
+        ))
 
     # PostgreSQL + pgvector
     db_detail = ""
@@ -624,17 +642,20 @@ class MainWindow(QMainWindow):
         # Results table
         self.results_table = QTableWidget()
         self.results_table.setColumnCount(5)
-        self.results_table.setHorizontalHeaderLabels(["#", "Score", "Source", "Headings", "Text"])
+        self.results_table.setHorizontalHeaderLabels(["#", "Score", "Source", "Text", "Headings"])
         header = self.results_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.results_table.setWordWrap(True)
         self.results_table.verticalHeader().setVisible(False)
+        self.results_table.cellClicked.connect(self._on_result_cell_clicked)
+        self.results_table.viewport().setMouseTracking(True)
+        self.results_table.viewport().installEventFilter(self)
         layout.addWidget(self.results_table, 1)
 
         # Export button
@@ -682,18 +703,24 @@ class MainWindow(QMainWindow):
             self.results_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
             self.results_table.setItem(i, 1, QTableWidgetItem(f"{r.similarity:.4f}"))
 
-            source_label = QLabel(
-                f'<a href="#">{r.source_path}:{r.source_line_start}</a>'
-            )
-            source_path = r.source_path
-            source_label.linkActivated.connect(
-                lambda _link, p=source_path: self._open_source(p)
-            )
-            self.results_table.setCellWidget(i, 2, source_label)
+            source_item = QTableWidgetItem(f"{r.source_path}:{r.source_line_start}")
+            source_item.setForeground(QColor(0, 102, 204))
+            source_font = source_item.font()
+            source_font.setUnderline(True)
+            source_item.setFont(source_font)
+            self.results_table.setItem(i, 2, source_item)
 
-            self.results_table.setItem(i, 3, QTableWidgetItem(" > ".join(r.heading_context)))
             text_preview = r.text[:300] + "…" if len(r.text) > 300 else r.text
-            self.results_table.setItem(i, 4, QTableWidgetItem(text_preview))
+            text_item = QTableWidgetItem(text_preview)
+            text_font = QFont()
+            text_font.setPointSizeF(text_font.pointSizeF() * 1.05)
+            text_item.setFont(text_font)
+            text_item.setForeground(QColor(23, 23, 23))
+            self.results_table.setItem(i, 3, text_item)
+
+            heading_item = QTableWidgetItem(" > ".join(r.heading_context))
+            heading_item.setForeground(QColor(130, 130, 130))
+            self.results_table.setItem(i, 4, heading_item)
         self.results_table.resizeRowsToContents()
 
         n = len(results)
@@ -701,10 +728,38 @@ class MainWindow(QMainWindow):
         self.export_btn.setEnabled(n > 0)
         self._cleanup_worker()
 
-    def _open_source(self, source_path: str) -> None:
-        """Open the source file with the OS default application."""
-        p = Path(source_path).resolve()
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if obj is self.results_table.viewport() and event.type() == QEvent.Type.MouseMove:
+            item = self.results_table.itemAt(event.position().toPoint())
+            if item is not None and item.column() == 2:
+                obj.setCursor(Qt.CursorShape.PointingHandCursor)
+            else:
+                obj.unsetCursor()
+        return super().eventFilter(obj, event)
+
+    def _on_result_cell_clicked(self, row: int, col: int) -> None:
+        if col == 2 and row < len(self._last_results):
+            r = self._last_results[row]
+            self._open_source(r.source_path, r.source_line_start)
+
+    def _open_source(self, source_path: str, line: int = 1) -> None:
+        """Open the source file in the user's editor at the given line."""
+        p = str(Path(source_path).resolve())
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+        if editor:
+            editor_base = Path(editor).name
+            try:
+                if editor_base in ("code", "code-insiders"):
+                    subprocess.Popen([editor, "--goto", f"{p}:{line}"])
+                elif editor_base in ("subl", "sublime_text"):
+                    subprocess.Popen([editor, f"{p}:{line}"])
+                else:
+                    # vim, nvim, emacs, nano, etc. all accept +line
+                    subprocess.Popen([editor, f"+{line}", p])
+                return
+            except OSError:
+                pass  # fall through to default
+        QDesktopServices.openUrl(QUrl.fromLocalFile(p))
 
     def _on_query_error(self, msg: str) -> None:
         self.status_bar.showMessage(f"Error: {msg}")
