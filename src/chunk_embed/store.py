@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import psycopg
 from tqdm import tqdm
@@ -59,9 +61,13 @@ def insert_chunks(
     document_id: int,
     chunks: list[ChunkData],
     embeddings: list[np.ndarray],
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> None:
+    total = len(chunks)
+    use_tqdm = on_progress is None
+    pbar = tqdm(total=total, desc="Storing", unit="chunk") if use_tqdm else None
     with conn.cursor() as cur:
-        for i, (chunk, emb) in tqdm(enumerate(zip(chunks, embeddings)), total=len(chunks), desc="Storing", unit="chunk"):
+        for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
             cur.execute(
                 "INSERT INTO chunks "
                 "(document_id, chunk_index, text, chunk_type, heading_context, "
@@ -80,6 +86,12 @@ def insert_chunks(
                     emb.tolist(),
                 ),
             )
+            if pbar is not None:
+                pbar.update(1)
+            if on_progress is not None:
+                on_progress(i + 1, total)
+    if pbar is not None:
+        pbar.close()
 
 
 def search_chunks(

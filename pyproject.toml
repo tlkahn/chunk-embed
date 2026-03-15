@@ -16,10 +16,12 @@ dependencies = [
     "seaborn>=0.13.2",
     "jupyter>=1.1.1",
     "tqdm>=4.66",
+    "pyside6>=6.7",
 ]
 
 [project.scripts]
 chunk-embed = "chunk_embed.cli:main"
+chunk-embed-gui = "chunk_embed.gui:main"
 
 [dependency-groups]
 dev = [

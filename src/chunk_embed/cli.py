@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from chunk_embed.store import ensure_schema, upsert_document, insert_chunks, sea
 @click.group("chunk-embed")
 def main() -> None:
     """Embed text-chunker JSON output into pgvector for semantic search."""
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 @main.command()
