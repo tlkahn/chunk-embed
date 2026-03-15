@@ -646,9 +646,11 @@ class MainWindow(QMainWindow):
         header = self.results_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.results_table.setColumnWidth(2, 200)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        self.results_table.setColumnWidth(4, 150)
         self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.results_table.setWordWrap(True)
@@ -707,6 +709,7 @@ class MainWindow(QMainWindow):
             source_item.setForeground(QColor(0, 102, 204))
             source_font = source_item.font()
             source_font.setUnderline(True)
+            source_font.setPointSizeF(source_font.pointSizeF() * 0.85)
             source_item.setFont(source_font)
             self.results_table.setItem(i, 2, source_item)
 
@@ -719,6 +722,9 @@ class MainWindow(QMainWindow):
             self.results_table.setItem(i, 3, text_item)
 
             heading_item = QTableWidgetItem(" > ".join(r.heading_context))
+            heading_font = heading_item.font()
+            heading_font.setPointSizeF(heading_font.pointSizeF() * 0.85)
+            heading_item.setFont(heading_font)
             heading_item.setForeground(QColor(130, 130, 130))
             self.results_table.setItem(i, 4, heading_item)
         self.results_table.resizeRowsToContents()
@@ -727,6 +733,16 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"{n} result{'s' if n != 1 else ''} found")
         self.export_btn.setEnabled(n > 0)
         self._cleanup_worker()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        tw = self.results_table.width()
+        max_source_w = tw // 6
+        if self.results_table.columnWidth(2) > max_source_w:
+            self.results_table.setColumnWidth(2, max_source_w)
+        max_heading_w = tw // 8
+        if self.results_table.columnWidth(4) > max_heading_w:
+            self.results_table.setColumnWidth(4, max_heading_w)
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if obj is self.results_table.viewport() and event.type() == QEvent.Type.MouseMove:
