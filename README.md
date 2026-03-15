@@ -215,6 +215,29 @@ uv run pytest -m slow
 uv run pytest
 ```
 
+## macOS App (.dmg)
+
+A pre-built `.dmg` is available from the [Releases](https://github.com/tlkahn/chunk-embed/releases) page. The app is ad-hoc signed (not notarized by Apple), so macOS Gatekeeper will block it by default.
+
+### Opening the app for the first time
+
+After mounting the `.dmg` and dragging **Chunk Embed** into Applications:
+
+1. **Double-click** the app. You will see a dialog: *"Chunk Embed" can't be opened because Apple cannot check it for malicious software.*
+2. Open **System Settings > Privacy & Security**, scroll down — you will see a message about "Chunk Embed" being blocked. Click **Open Anyway**.
+3. Alternatively, **right-click** (or Control-click) the app and choose **Open**, then click **Open** in the dialog.
+
+You only need to do this once. After the first launch, macOS remembers your choice.
+
+### Prerequisites
+
+The app bundles Python and all dependencies. You still need:
+
+- **PostgreSQL** with the [pgvector](https://github.com/pgvector/pgvector) extension installed
+- An internet connection on first launch (to download the BGE-M3 model, ~2 GB)
+
+The Setup tab inside the app checks dependency status and provides install guidance.
+
 ## License
 
 MIT

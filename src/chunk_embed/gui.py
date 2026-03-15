@@ -873,6 +873,8 @@ class MainWindow(QMainWindow):
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    from chunk_embed._paths import prepend_bundled_bin_to_path
+    prepend_bundled_bin_to_path()
     app = QApplication(sys.argv)
     app.setApplicationName("chunk-embed")
     window = MainWindow()
