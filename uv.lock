@@ -291,7 +291,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=3.0.1" },
     { name = "pgvector", specifier = ">=0.3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
-    { name = "pyside6", specifier = ">=6.7" },
+    { name = "pyside6", specifier = ">=6.8" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "sentence-transformers", specifier = ">=3.0" },
     { name = "tqdm", specifier = ">=4.66" },

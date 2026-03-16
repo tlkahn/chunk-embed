@@ -501,39 +501,30 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # File picker row
-        file_row = QHBoxLayout()
-        self.ingest_file = QLineEdit()
-        self.ingest_file.setPlaceholderText("Path to JSON chunks or Markdown file…")
-        file_btn = QPushButton("Browse…")
-        file_btn.clicked.connect(self._browse_file)
-        file_row.addWidget(self.ingest_file, 1)
-        file_row.addWidget(file_btn)
-        layout.addLayout(file_row)
-
-        # Source path
+        # Source: [Browse…]  filename.md
         src_row = QHBoxLayout()
         src_row.addWidget(QLabel("Source:"))
-        self.ingest_source = QLineEdit()
-        self.ingest_source.setPlaceholderText("Auto-filled from file path")
+        file_btn = QPushButton("Browse…")
+        file_btn.clicked.connect(self._browse_file)
+        src_row.addWidget(file_btn)
+        self.ingest_source = QLabel("No file selected")
+        self.ingest_source.setStyleSheet("color: gray;")
+        self.ingest_source.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+        )
         src_row.addWidget(self.ingest_source, 1)
         layout.addLayout(src_row)
 
-        # Language + split
-        lang_row = QHBoxLayout()
-        lang_row.addWidget(QLabel("Language:"))
+        # Language + split + dry run + ingest button
+        opt_row = QHBoxLayout()
+        opt_row.addWidget(QLabel("Language:"))
         self.lang_combo = QComboBox()
         self.lang_combo.addItems(["en", "de", "fr", "sa", "es", "it", "pt", "ru", "zh", "ja"])
         self.lang_combo.setCurrentText("en")
-        lang_row.addWidget(self.lang_combo)
+        opt_row.addWidget(self.lang_combo)
         self.split_check = QCheckBox("Sentence split")
         self.split_check.setChecked(True)
-        lang_row.addWidget(self.split_check)
-        lang_row.addStretch()
-        layout.addLayout(lang_row)
-
-        # Options row
-        opt_row = QHBoxLayout()
+        opt_row.addWidget(self.split_check)
         self.dry_run_check = QCheckBox("Dry run")
         opt_row.addWidget(self.dry_run_check)
         opt_row.addStretch()
@@ -557,16 +548,16 @@ class MainWindow(QMainWindow):
             "Supported Files (*.json *.md *.markdown *.mdown *.mkd);;JSON Files (*.json);;Markdown Files (*.md *.markdown *.mdown *.mkd);;All Files (*)",
         )
         if path:
-            self.ingest_file.setText(path)
-            if not self.ingest_source.text():
-                self.ingest_source.setText(path)
+            self._ingest_file_path = path
+            self.ingest_source.setText(path)
+            self.ingest_source.setStyleSheet("")
 
     def _start_ingest(self) -> None:
-        file_path = self.ingest_file.text().strip()
+        file_path = getattr(self, "_ingest_file_path", "")
         if not file_path:
             self.status_bar.showMessage("No file selected")
             return
-        source = self.ingest_source.text().strip() or file_path
+        source = file_path
 
         self.ingest_log.clear()
         self.ingest_btn.setEnabled(False)
