@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-import numpy as np
 import pytest
 from click.testing import CliRunner
 
@@ -37,6 +36,21 @@ def mock_deps():
         yield
 
 
+@pytest.fixture
+def mock_batch_deps():
+    """Patch embedder and ingest_one_file for file/directory CLI tests."""
+    mock_emb = MockEmbedder()
+    with (
+        patch("chunk_embed.cli.BgeM3Embedder", return_value=mock_emb),
+        patch("chunk_embed.cli.ingest_one_file") as mock_ingest,
+    ):
+        from chunk_embed.pipeline import IngestResult
+        mock_ingest.return_value = IngestResult(
+            source_path="test", doc_id=1, num_chunks=3, num_embeddings=3, dry_run=False,
+        )
+        yield mock_ingest
+
+
 def test_cli_group_help(runner):
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
@@ -56,7 +70,7 @@ def test_cli_stdin_pipe(runner, mock_deps):
     assert result.exit_code == 0, result.output
 
 
-def test_cli_file_input(runner, mock_deps, tmp_path):
+def test_cli_file_input(runner, mock_batch_deps, tmp_path):
     src = tmp_path / "chunks.json"
     src.write_text((FIXTURES / "sample_chunks.json").read_text())
     result = runner.invoke(main, ["ingest", str(src)])
@@ -70,23 +84,24 @@ def test_cli_missing_source_for_stdin(runner, mock_deps):
     assert "source" in result.output.lower() or "required" in result.output.lower()
 
 
-def test_cli_file_input_infers_source(runner, mock_deps, tmp_path):
+def test_cli_file_input_infers_source(runner, tmp_path):
+    """File path is passed as source=None to ingest_one_file, which infers it."""
     src = tmp_path / "my_doc.json"
     src.write_text((FIXTURES / "sample_chunks.json").read_text())
-    with patch("chunk_embed.cli.upsert_document", return_value=1) as mock_upsert:
-        with (
-            patch("chunk_embed.cli.BgeM3Embedder", return_value=MockEmbedder()),
-            patch("chunk_embed.cli.psycopg.connect") as mc,
-            patch("chunk_embed.cli.register_vector"),
-            patch("chunk_embed.cli.ensure_schema"),
-            patch("chunk_embed.cli.insert_chunks"),
-        ):
-            mc.return_value.__enter__ = MagicMock(return_value=mc.return_value)
-            mc.return_value.__exit__ = MagicMock(return_value=False)
-            result = runner.invoke(main, ["ingest", str(src)])
-            assert result.exit_code == 0, result.output
-            mock_upsert.assert_called_once()
-            assert str(src) in mock_upsert.call_args[0][1]
+    from chunk_embed.pipeline import IngestResult
+    mock_emb = MockEmbedder()
+    with (
+        patch("chunk_embed.cli.BgeM3Embedder", return_value=mock_emb),
+        patch("chunk_embed.cli.ingest_one_file") as mock_ingest,
+    ):
+        mock_ingest.return_value = IngestResult(
+            source_path=str(src), doc_id=1, num_chunks=3, num_embeddings=3, dry_run=False,
+        )
+        result = runner.invoke(main, ["ingest", str(src)])
+        assert result.exit_code == 0, result.output
+        mock_ingest.assert_called_once()
+        # source should be None (ingest_one_file infers from file_path)
+        assert mock_ingest.call_args.kwargs.get("source") is None
 
 
 def test_cli_invalid_json(runner, mock_deps):
@@ -100,29 +115,124 @@ def test_cli_help_shows_no_split_but_not_lang(runner):
     assert "--no-split" in result.output
 
 
-def test_cli_no_split_skips_split_chunks(runner, mock_deps, tmp_path):
+def test_cli_no_split_skips_split_chunks(runner, mock_batch_deps, tmp_path):
+    """--no-split passes split=False to ingest_one_file."""
     src = tmp_path / "chunks.json"
     src.write_text((FIXTURES / "sample_chunks.json").read_text())
-    with patch("chunk_embed.cli.split_chunks") as mock_split:
-        result = runner.invoke(main, ["ingest", str(src), "--no-split"])
-        assert result.exit_code == 0, result.output
-        mock_split.assert_not_called()
+    result = runner.invoke(main, ["ingest", str(src), "--no-split"])
+    assert result.exit_code == 0, result.output
+    mock_batch_deps.assert_called_once()
+    assert mock_batch_deps.call_args.kwargs.get("split") is False
 
 
 def test_cli_dry_run(runner, tmp_path):
     src = tmp_path / "chunks.json"
     src.write_text((FIXTURES / "sample_chunks.json").read_text())
+    from chunk_embed.pipeline import IngestResult
     mock_emb = MockEmbedder()
     with (
         patch("chunk_embed.cli.BgeM3Embedder", return_value=mock_emb),
-        patch("chunk_embed.cli.psycopg.connect") as mock_connect,
-        patch("chunk_embed.cli.insert_chunks") as mock_insert,
+        patch("chunk_embed.cli.ingest_one_file") as mock_ingest,
     ):
+        mock_ingest.return_value = IngestResult(
+            source_path=str(src), doc_id=None, num_chunks=3, num_embeddings=3, dry_run=True,
+        )
         result = runner.invoke(main, ["ingest", str(src), "--dry-run"])
         assert result.exit_code == 0, result.output
-        mock_connect.assert_not_called()
-        mock_insert.assert_not_called()
-        assert "dry" in result.output.lower() or "skip" in result.output.lower()
+        mock_ingest.assert_called_once()
+        assert mock_ingest.call_args.kwargs.get("dry_run") is True
+
+
+# --- batch ingest tests ---
+
+
+def test_cli_multiple_files(runner, mock_batch_deps, tmp_path):
+    f1 = tmp_path / "a.json"
+    f2 = tmp_path / "b.json"
+    for f in (f1, f2):
+        f.write_text((FIXTURES / "sample_chunks.json").read_text())
+    result = runner.invoke(main, ["ingest", str(f1), str(f2)])
+    assert result.exit_code == 0, result.output
+    assert mock_batch_deps.call_count == 2
+
+
+def test_cli_directory(runner, mock_batch_deps, tmp_path):
+    f1 = tmp_path / "a.json"
+    f2 = tmp_path / "b.md"
+    txt = tmp_path / "c.txt"  # should be ignored
+    for f in (f1, f2, txt):
+        f.write_text("x")
+    result = runner.invoke(main, ["ingest", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert mock_batch_deps.call_count == 2
+
+
+def test_cli_empty_directory(runner, mock_batch_deps, tmp_path):
+    d = tmp_path / "empty"
+    d.mkdir()
+    result = runner.invoke(main, ["ingest", str(d)])
+    assert result.exit_code != 0
+    assert "no eligible files" in result.output.lower()
+
+
+def test_cli_continue_on_error(runner, tmp_path):
+    """Default: continues past failures, reports summary, exits 1."""
+    f1 = tmp_path / "a.json"
+    f2 = tmp_path / "b.json"
+    for f in (f1, f2):
+        f.write_text((FIXTURES / "sample_chunks.json").read_text())
+
+    from chunk_embed.pipeline import IngestResult
+    ok = IngestResult(source_path="a", doc_id=1, num_chunks=3, num_embeddings=3, dry_run=False)
+    mock_emb = MockEmbedder()
+
+    with (
+        patch("chunk_embed.cli.BgeM3Embedder", return_value=mock_emb),
+        patch("chunk_embed.cli.ingest_one_file", side_effect=[Exception("boom"), ok]),
+    ):
+        result = runner.invoke(main, ["ingest", str(f1), str(f2)])
+    assert result.exit_code == 1
+    assert "1 succeeded" in result.output
+    assert "1 failed" in result.output
+
+
+def test_cli_fail_fast(runner, tmp_path):
+    """--fail-fast stops on first error."""
+    f1 = tmp_path / "a.json"
+    f2 = tmp_path / "b.json"
+    for f in (f1, f2):
+        f.write_text((FIXTURES / "sample_chunks.json").read_text())
+
+    mock_emb = MockEmbedder()
+    with (
+        patch("chunk_embed.cli.BgeM3Embedder", return_value=mock_emb),
+        patch("chunk_embed.cli.ingest_one_file", side_effect=Exception("boom")) as mock_ingest,
+    ):
+        result = runner.invoke(main, ["ingest", str(f1), str(f2), "--fail-fast"])
+    assert result.exit_code == 1
+    assert mock_ingest.call_count == 1  # stopped after first
+
+
+def test_cli_glob_filter(runner, mock_batch_deps, tmp_path):
+    md = tmp_path / "a.md"
+    json_ = tmp_path / "b.json"
+    for f in (md, json_):
+        f.write_text("x")
+    result = runner.invoke(main, ["ingest", str(tmp_path), "--glob", "*.md"])
+    assert result.exit_code == 0, result.output
+    assert mock_batch_deps.call_count == 1
+
+
+def test_cli_no_recursive(runner, mock_batch_deps, tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    top = tmp_path / "top.md"
+    nested = sub / "nested.md"
+    for f in (top, nested):
+        f.write_text("x")
+    result = runner.invoke(main, ["ingest", str(tmp_path), "--no-recursive"])
+    assert result.exit_code == 0, result.output
+    assert mock_batch_deps.call_count == 1  # only top-level
 
 
 # --- query subcommand tests ---

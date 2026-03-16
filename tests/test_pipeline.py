@@ -1,0 +1,253 @@
+from pathlib import Path
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+from chunk_embed.pipeline import resolve_paths, read_or_chunk_file, ingest_one_file, IngestResult
+from tests.conftest import MockEmbedder
+
+
+def test_resolve_paths_single_json_file(tmp_path):
+    f = tmp_path / "chunks.json"
+    f.write_text("{}")
+    assert resolve_paths([str(f)]) == [f]
+
+
+def test_resolve_paths_single_md_file(tmp_path):
+    f = tmp_path / "doc.md"
+    f.write_text("# hello")
+    assert resolve_paths([str(f)]) == [f]
+
+
+def test_resolve_paths_explicit_file_any_extension(tmp_path):
+    """Explicit file paths are always included regardless of extension."""
+    f = tmp_path / "notes.txt"
+    f.write_text("hello")
+    assert resolve_paths([str(f)]) == [f]
+
+
+def test_resolve_paths_directory_filters_by_extension(tmp_path):
+    md = tmp_path / "a.md"
+    json_ = tmp_path / "b.json"
+    txt = tmp_path / "c.txt"
+    for f in (md, json_, txt):
+        f.write_text("x")
+    result = resolve_paths([str(tmp_path)])
+    assert md in result
+    assert json_ in result
+    assert txt not in result
+
+
+def test_resolve_paths_directory_sorted(tmp_path):
+    b = tmp_path / "b.md"
+    a = tmp_path / "a.md"
+    for f in (b, a):
+        f.write_text("x")
+    result = resolve_paths([str(tmp_path)])
+    assert result == [a, b]
+
+
+def test_resolve_paths_recursive(tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    top = tmp_path / "top.md"
+    nested = sub / "nested.md"
+    for f in (top, nested):
+        f.write_text("x")
+    result = resolve_paths([str(tmp_path)], recursive=True)
+    assert nested in result
+    assert top in result
+
+
+def test_resolve_paths_non_recursive(tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    top = tmp_path / "top.md"
+    nested = sub / "nested.md"
+    for f in (top, nested):
+        f.write_text("x")
+    result = resolve_paths([str(tmp_path)], recursive=False)
+    assert top in result
+    assert nested not in result
+
+
+def test_resolve_paths_glob_pattern(tmp_path):
+    md = tmp_path / "a.md"
+    json_ = tmp_path / "b.json"
+    for f in (md, json_):
+        f.write_text("x")
+    result = resolve_paths([str(tmp_path)], glob_pattern="*.md")
+    assert result == [md]
+
+
+def test_resolve_paths_mixed_files_and_dirs(tmp_path):
+    d = tmp_path / "docs"
+    d.mkdir()
+    f1 = tmp_path / "standalone.json"
+    f2 = d / "chapter.md"
+    for f in (f1, f2):
+        f.write_text("x")
+    result = resolve_paths([str(f1), str(d)])
+    assert f1 in result
+    assert f2 in result
+
+
+def test_resolve_paths_empty_directory(tmp_path):
+    d = tmp_path / "empty"
+    d.mkdir()
+    assert resolve_paths([str(d)]) == []
+
+
+def test_resolve_paths_nonexistent_path():
+    with pytest.raises(FileNotFoundError, match="Path not found"):
+        resolve_paths(["/nonexistent/path/to/nowhere"])
+
+
+def test_resolve_paths_multiple_files(tmp_path):
+    f1 = tmp_path / "a.json"
+    f2 = tmp_path / "b.md"
+    for f in (f1, f2):
+        f.write_text("x")
+    result = resolve_paths([str(f1), str(f2)])
+    assert result == [f1, f2]
+
+
+# --- read_or_chunk_file ---
+
+
+def test_read_or_chunk_file_json(tmp_path):
+    """JSON files are read directly."""
+    f = tmp_path / "chunks.json"
+    f.write_text('{"total_chunks": 0}')
+    assert read_or_chunk_file(f) == '{"total_chunks": 0}'
+
+
+def test_read_or_chunk_file_markdown(tmp_path):
+    """Markdown files trigger text-chunker subprocess."""
+    f = tmp_path / "doc.md"
+    f.write_text("# Hello")
+    fake_json = '{"total_chunks": 1, "mode": "document", "chunks": []}'
+    mock_result = MagicMock(stdout=fake_json)
+    with patch("chunk_embed.pipeline.subprocess.run", return_value=mock_result) as mock_run:
+        result = read_or_chunk_file(f)
+        assert result == fake_json
+        mock_run.assert_called_once_with(
+            ["text-chunker", "--json", "chunks", str(f)],
+            capture_output=True, text=True, check=True,
+        )
+
+
+def test_read_or_chunk_file_markdown_text_chunker_missing(tmp_path):
+    """Raises FileNotFoundError when text-chunker is not installed."""
+    f = tmp_path / "doc.md"
+    f.write_text("# Hello")
+    with patch("chunk_embed.pipeline.subprocess.run", side_effect=FileNotFoundError):
+        with pytest.raises(FileNotFoundError):
+            read_or_chunk_file(f)
+
+
+def test_read_or_chunk_file_markdown_text_chunker_fails(tmp_path):
+    """Raises RuntimeError when text-chunker exits non-zero."""
+    import subprocess as sp
+    f = tmp_path / "doc.md"
+    f.write_text("# Hello")
+    with patch(
+        "chunk_embed.pipeline.subprocess.run",
+        side_effect=sp.CalledProcessError(1, "text-chunker", stderr="bad input"),
+    ):
+        with pytest.raises(RuntimeError, match="text-chunker failed"):
+            read_or_chunk_file(f)
+
+
+# --- ingest_one_file ---
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture
+def mock_pipeline_db():
+    """Patch DB dependencies for ingest_one_file tests."""
+    mock_conn = MagicMock()
+    mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    with (
+        patch("chunk_embed.pipeline.psycopg.connect", return_value=mock_conn),
+        patch("chunk_embed.pipeline.register_vector"),
+        patch("chunk_embed.pipeline.ensure_schema"),
+        patch("chunk_embed.pipeline.upsert_document", return_value=42) as mock_upsert,
+        patch("chunk_embed.pipeline.insert_chunks"),
+    ):
+        yield mock_upsert
+
+
+def test_ingest_one_file_json(tmp_path, mock_pipeline_db):
+    """Full pipeline: JSON file → parse → embed → store."""
+    src = tmp_path / "chunks.json"
+    src.write_text((FIXTURES / "sample_chunks.json").read_text())
+    embedder = MockEmbedder()
+    result = ingest_one_file(
+        file_path=src,
+        source=None,
+        embedder=embedder,
+        split=False,
+        database_url="postgresql://localhost/test",
+    )
+    assert isinstance(result, IngestResult)
+    assert result.source_path == str(src)
+    assert result.doc_id == 42
+    assert result.num_chunks == 3
+    assert result.num_embeddings == 3
+    assert result.dry_run is False
+
+
+def test_ingest_one_file_dry_run(tmp_path):
+    """Dry run skips DB entirely."""
+    src = tmp_path / "chunks.json"
+    src.write_text((FIXTURES / "sample_chunks.json").read_text())
+    embedder = MockEmbedder()
+    with patch("chunk_embed.pipeline.psycopg.connect") as mock_connect:
+        result = ingest_one_file(
+            file_path=src,
+            source="test.md",
+            embedder=embedder,
+            split=False,
+            dry_run=True,
+        )
+        mock_connect.assert_not_called()
+    assert result.doc_id is None
+    assert result.dry_run is True
+    assert result.num_embeddings == 3
+
+
+def test_ingest_one_file_custom_source(tmp_path, mock_pipeline_db):
+    """Explicit source overrides file path."""
+    src = tmp_path / "chunks.json"
+    src.write_text((FIXTURES / "sample_chunks.json").read_text())
+    embedder = MockEmbedder()
+    mock_upsert = mock_pipeline_db
+    result = ingest_one_file(
+        file_path=src,
+        source="custom/source.md",
+        embedder=embedder,
+        split=False,
+        database_url="postgresql://localhost/test",
+    )
+    assert result.source_path == "custom/source.md"
+    mock_upsert.assert_called_once()
+    assert mock_upsert.call_args[0][1] == "custom/source.md"
+
+
+def test_ingest_one_file_parse_error(tmp_path):
+    """ParseError from invalid JSON propagates."""
+    src = tmp_path / "bad.json"
+    src.write_text("not valid json {{{")
+    embedder = MockEmbedder()
+    from chunk_embed.parse import ParseError
+    with pytest.raises(ParseError):
+        ingest_one_file(
+            file_path=src,
+            source=None,
+            embedder=embedder,
+            split=False,
+            dry_run=True,
+        )
