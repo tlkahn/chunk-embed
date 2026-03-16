@@ -530,8 +530,7 @@ class MainWindow(QMainWindow):
         # Log area
         self.ingest_log = QTextEdit()
         self.ingest_log.setReadOnly(True)
-        self.ingest_log.setMaximumHeight(180)
-        layout.addWidget(self.ingest_log)
+        layout.addWidget(self.ingest_log, 1)
 
         self.tabs.addTab(tab, "Ingest")
 
