@@ -60,6 +60,7 @@ python_version_tag = "3.13"
 [tool.briefcase.app.chunk_embed]
 formal_name = "Chunk Embed"
 description = "Semantic search for text chunks using BGE-M3 and pgvector"
+icon = "icons/chunk_embed"
 sources = ["src/chunk_embed"]
 requires = [
     "click>=8.1",

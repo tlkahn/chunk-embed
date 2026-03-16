@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QThread, Signal, QSize, QUrl, Qt
-from PySide6.QtGui import QColor, QDesktopServices, QFont
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -889,6 +889,9 @@ def main() -> None:
     prepend_bundled_bin_to_path()
     app = QApplication(sys.argv)
     app.setApplicationName("chunk-embed")
+    icon_path = Path(__file__).resolve().parents[2] / "icons" / "chunk_embed.icns"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
