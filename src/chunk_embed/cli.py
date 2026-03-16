@@ -34,9 +34,8 @@ def main() -> None:
     help="PostgreSQL connection string",
 )
 @click.option("--dry-run", is_flag=True, help="Parse and embed without writing to DB")
-@click.option("--lang", default="en", help="ISO 639-1 language code for sentence splitting")
 @click.option("--no-split", is_flag=True, help="Disable sentence splitting")
-def ingest(input_path: str, source: str | None, batch_size: int, database_url: str, dry_run: bool, lang: str, no_split: bool) -> None:
+def ingest(input_path: str, source: str | None, batch_size: int, database_url: str, dry_run: bool, no_split: bool) -> None:
     """Ingest text-chunker JSON into pgvector."""
     if input_path == "-":
         if source is None:
@@ -59,7 +58,7 @@ def ingest(input_path: str, source: str | None, batch_size: int, database_url: s
 
     chunks = chunks_input.chunks
     if not no_split:
-        chunks = split_chunks(chunks, lang)
+        chunks = split_chunks(chunks)
         click.echo(f"Split into {len(chunks)} sentence chunks")
 
     embedder = BgeM3Embedder()

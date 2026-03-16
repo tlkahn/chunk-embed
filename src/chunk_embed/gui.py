@@ -161,7 +161,6 @@ class IngestWorker(QThread):
         self,
         file_path: str,
         source: str,
-        lang: str,
         split: bool,
         database_url: str,
         dry_run: bool,
@@ -170,7 +169,6 @@ class IngestWorker(QThread):
         super().__init__()
         self.file_path = file_path
         self.source = source
-        self.lang = lang
         self.split = split
         self.database_url = database_url
         self.dry_run = dry_run
@@ -220,8 +218,8 @@ class IngestWorker(QThread):
 
         # Split
         if self.split:
-            self.log.emit(f"Splitting sentences (lang={self.lang})…")
-            chunks = split_chunks(chunks, self.lang)
+            self.log.emit("Splitting sentences (auto-detecting language)…")
+            chunks = split_chunks(chunks)
             self.log.emit(f"Split into {len(chunks)} sentence chunks")
 
         # Embed — install log handler to forward model-loading messages to GUI
@@ -515,13 +513,8 @@ class MainWindow(QMainWindow):
         src_row.addWidget(self.ingest_source, 1)
         layout.addLayout(src_row)
 
-        # Language + split + dry run + ingest button
+        # Split + dry run + ingest button
         opt_row = QHBoxLayout()
-        opt_row.addWidget(QLabel("Language:"))
-        self.lang_combo = QComboBox()
-        self.lang_combo.addItems(["en", "de", "fr", "sa", "es", "it", "pt", "ru", "zh", "ja"])
-        self.lang_combo.setCurrentText("en")
-        opt_row.addWidget(self.lang_combo)
         self.split_check = QCheckBox("Sentence split")
         self.split_check.setChecked(True)
         opt_row.addWidget(self.split_check)
@@ -567,7 +560,6 @@ class MainWindow(QMainWindow):
         self._worker = IngestWorker(
             file_path=file_path,
             source=source,
-            lang=self.lang_combo.currentText(),
             split=self.split_check.isChecked(),
             database_url=self.db_url.text(),
             dry_run=self.dry_run_check.isChecked(),

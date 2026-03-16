@@ -8,7 +8,6 @@ from click.testing import CliRunner
 
 from chunk_embed.cli import main
 from chunk_embed.models import SearchResult
-from chunk_embed.split import split_chunks
 from tests.conftest import MockEmbedder
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -95,30 +94,10 @@ def test_cli_invalid_json(runner, mock_deps):
     assert result.exit_code == 1
 
 
-def test_cli_help_shows_lang_and_no_split(runner):
+def test_cli_help_shows_no_split_but_not_lang(runner):
     result = runner.invoke(main, ["ingest", "--help"])
-    assert "--lang" in result.output
+    assert "--lang" not in result.output
     assert "--no-split" in result.output
-
-
-def test_cli_default_lang_is_en(runner, mock_deps, tmp_path):
-    src = tmp_path / "chunks.json"
-    src.write_text((FIXTURES / "sample_chunks.json").read_text())
-    with patch("chunk_embed.cli.split_chunks", wraps=split_chunks) as mock_split:
-        result = runner.invoke(main, ["ingest", str(src)])
-        assert result.exit_code == 0, result.output
-        mock_split.assert_called_once()
-        assert mock_split.call_args[0][1] == "en"
-
-
-def test_cli_lang_de(runner, mock_deps, tmp_path):
-    src = tmp_path / "chunks.json"
-    src.write_text((FIXTURES / "sample_chunks.json").read_text())
-    with patch("chunk_embed.cli.split_chunks", wraps=split_chunks) as mock_split:
-        result = runner.invoke(main, ["ingest", str(src), "--lang", "de"])
-        assert result.exit_code == 0, result.output
-        mock_split.assert_called_once()
-        assert mock_split.call_args[0][1] == "de"
 
 
 def test_cli_no_split_skips_split_chunks(runner, mock_deps, tmp_path):
