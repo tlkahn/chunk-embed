@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QThread, Signal, QSize, QUrl, Qt
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -147,16 +148,14 @@ class IngestWorker(QThread):
 
     def __init__(
         self,
-        file_path: str,
-        source: str,
+        file_paths: list[str],
         split: bool,
         database_url: str,
         dry_run: bool,
         batch_size: int = 32,
     ) -> None:
         super().__init__()
-        self.file_path = file_path
-        self.source = source
+        self.file_paths = file_paths
         self.split = split
         self.database_url = database_url
         self.dry_run = dry_run
@@ -189,23 +188,39 @@ class IngestWorker(QThread):
             embed_logger.removeHandler(handler)
             st_logger.removeHandler(handler)
 
-        result = ingest_one_file(
-            file_path=Path(self.file_path),
-            source=self.source,
-            embedder=embedder,
-            split=self.split,
-            batch_size=self.batch_size,
-            database_url=self.database_url,
-            dry_run=self.dry_run,
-            on_log=self.log.emit,
-            on_embed_progress=lambda done, total: self.progress.emit("Embedding", done, total),
-            on_store_progress=lambda done, total: self.progress.emit("Storing", done, total),
-        )
+        total_files = len(self.file_paths)
+        succeeded = 0
+        failed = 0
 
-        if result.dry_run:
-            self.finished.emit(f"Dry run complete — {result.num_embeddings} embeddings produced, DB write skipped.")
-        else:
-            self.finished.emit(f"Done — document {result.doc_id}, {result.num_chunks} chunks stored.")
+        for i, fp in enumerate(self.file_paths, 1):
+            prefix = f"[{i}/{total_files}] {Path(fp).name}"
+            self.log.emit(f"{prefix}: starting…")
+            try:
+                result = ingest_one_file(
+                    file_path=Path(fp),
+                    source=None,
+                    embedder=embedder,
+                    split=self.split,
+                    batch_size=self.batch_size,
+                    database_url=self.database_url,
+                    dry_run=self.dry_run,
+                    on_log=lambda msg, _p=prefix: self.log.emit(f"{_p}: {msg}"),
+                    on_embed_progress=lambda done, tot, _p=prefix: self.progress.emit(f"{_p} — Embedding", done, tot),
+                    on_store_progress=lambda done, tot, _p=prefix: self.progress.emit(f"{_p} — Storing", done, tot),
+                )
+                if result.dry_run:
+                    self.log.emit(f"{prefix}: dry run — {result.num_embeddings} embeddings produced")
+                else:
+                    self.log.emit(f"{prefix}: done — doc {result.doc_id}, {result.num_chunks} chunks stored")
+                succeeded += 1
+            except Exception as exc:
+                self.log.emit(f"{prefix}: ERROR — {exc}")
+                failed += 1
+
+        parts = [f"{succeeded} succeeded"]
+        if failed:
+            parts.append(f"{failed} failed")
+        self.finished.emit(f"Done: {', '.join(parts)} ({total_files} files)")
 
 
 class QueryWorker(QThread):
@@ -478,11 +493,14 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # Source: [Browse…]  filename.md
+        # Source: [Browse… ▾]  filename.md
         src_row = QHBoxLayout()
         src_row.addWidget(QLabel("Source:"))
-        file_btn = QPushButton("Browse…")
-        file_btn.clicked.connect(self._browse_file)
+        browse_menu = QMenu(self)
+        browse_menu.addAction(QAction("Files…", self, triggered=self._browse_files))
+        browse_menu.addAction(QAction("Folder…", self, triggered=self._browse_folder))
+        file_btn = QPushButton("Browse… ▾")
+        file_btn.setMenu(browse_menu)
         src_row.addWidget(file_btn)
         self.ingest_source = QLabel("No file selected")
         self.ingest_source.setStyleSheet("color: gray;")
@@ -513,22 +531,39 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(tab, "Ingest")
 
-    def _browse_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select chunks file", "",
+    def _browse_files(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Select files", "",
             "Supported Files (*.json *.md *.markdown *.mdown *.mkd);;JSON Files (*.json);;Markdown Files (*.md *.markdown *.mdown *.mkd);;All Files (*)",
         )
-        if path:
-            self._ingest_file_path = path
-            self.ingest_source.setText(path)
+        if paths:
+            self._ingest_file_paths = paths
+            if len(paths) == 1:
+                self.ingest_source.setText(paths[0])
+            else:
+                self.ingest_source.setText(f"{len(paths)} files selected")
+            self.ingest_source.setStyleSheet("")
+
+    def _browse_folder(self) -> None:
+        from chunk_embed.pipeline import resolve_paths
+
+        directory = QFileDialog.getExistingDirectory(self, "Select folder")
+        if directory:
+            expanded = resolve_paths([directory])
+            if not expanded:
+                self.ingest_source.setText(f"{Path(directory).name}/ (0 eligible files)")
+                self.ingest_source.setStyleSheet("color: gray;")
+                self._ingest_file_paths = []
+                return
+            self._ingest_file_paths = [str(p) for p in expanded]
+            self.ingest_source.setText(f"{Path(directory).name}/ ({len(expanded)} files)")
             self.ingest_source.setStyleSheet("")
 
     def _start_ingest(self) -> None:
-        file_path = getattr(self, "_ingest_file_path", "")
-        if not file_path:
-            self.status_bar.showMessage("No file selected")
+        file_paths = getattr(self, "_ingest_file_paths", [])
+        if not file_paths:
+            self.status_bar.showMessage("No files selected")
             return
-        source = file_path
 
         self.ingest_log.clear()
         self.ingest_btn.setEnabled(False)
@@ -536,8 +571,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.show()
 
         self._worker = IngestWorker(
-            file_path=file_path,
-            source=source,
+            file_paths=file_paths,
             split=self.split_check.isChecked(),
             database_url=self.db_url.text(),
             dry_run=self.dry_run_check.isChecked(),
