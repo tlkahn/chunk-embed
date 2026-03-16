@@ -76,4 +76,4 @@ requires = [
 [tool.briefcase.app.chunk_embed.macOS]
 min_os_version = "13.0"
 universal_build = false
-resources = ["resources/bin", "resources/setup-help.html"]
+resources = ["resources/bin", "resources/doc"]

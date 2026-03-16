@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,7 +71,7 @@ class DepStatus:
     ok: bool
     detail: str
     install_hint: str
-    help_anchor: str = ""
+    help_page: str = ""
 
 
 def _check_dependencies(database_url: str) -> list[DepStatus]:
@@ -83,7 +84,7 @@ def _check_dependencies(database_url: str) -> list[DepStatus]:
         ok=model_ok,
         detail=str(MODEL_DIR) if model_ok else f"{MODEL_DIR} not found",
         install_hint="Auto-downloaded on first embed, or manually place in local_bge_m3/",
-        help_anchor="bge-m3",
+        help_page="help-bge-m3.html",
     ))
 
     # Editor ($VISUAL / $EDITOR)
@@ -95,7 +96,7 @@ def _check_dependencies(database_url: str) -> list[DepStatus]:
             ok=editor_path is not None,
             detail=editor or "set but not found in PATH",
             install_hint="Ensure $VISUAL or $EDITOR points to a valid executable",
-            help_anchor="editor",
+            help_page="help-editor.html",
         ))
     else:
         results.append(DepStatus(
@@ -103,7 +104,7 @@ def _check_dependencies(database_url: str) -> list[DepStatus]:
             ok=False,
             detail="$VISUAL and $EDITOR not set — source links open without line positioning",
             install_hint='export EDITOR=code  (or vim, nvim, emacs, subl, etc.)',
-            help_anchor="editor",
+            help_page="help-editor.html",
         ))
 
     # PostgreSQL + pgvector
@@ -127,7 +128,7 @@ def _check_dependencies(database_url: str) -> list[DepStatus]:
         ok=db_ok,
         detail=db_detail,
         install_hint='brew install postgresql; createdb chunk_embed; psql chunk_embed -c "CREATE EXTENSION vector"',
-        help_anchor="postgresql",
+        help_page="help-postgresql.html",
     ))
 
     return results
@@ -431,7 +432,7 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(tab, "Setup")
 
-    _HELP_PAGE = Path(__file__).resolve().parents[2] / "resources" / "setup-help.html"
+    _HELP_DIR = Path(__file__).resolve().parents[2] / "resources" / "doc"
 
     def _populate_dep_table(self, statuses: list[DepStatus]) -> None:
         self.dep_table.setRowCount(len(statuses))
@@ -444,11 +445,11 @@ class MainWindow(QMainWindow):
             self.dep_table.setItem(i, 1, status_item)
             self.dep_table.setItem(i, 2, QTableWidgetItem(dep.detail))
             # Install/Fix column: hint text + "More…" link
-            if dep.help_anchor and self._HELP_PAGE.exists():
-                url = QUrl.fromLocalFile(str(self._HELP_PAGE))
-                url.setFragment(dep.help_anchor)
+            help_file = self._HELP_DIR / dep.help_page if dep.help_page else None
+            if help_file and help_file.exists():
+                url = QUrl.fromLocalFile(str(help_file))
                 label = QLabel()
-                label.setOpenExternalLinks(True)
+                label.linkActivated.connect(self._open_help_link)
                 label.setTextFormat(Qt.TextFormat.RichText)
                 label.setWordWrap(True)
                 label.setProperty("hint_text", dep.install_hint)
@@ -479,6 +480,11 @@ class MainWindow(QMainWindow):
                 f'<span style="color:{text_col}">{hint}</span>'
                 f'  <a href="{url}" style="color:{link_col}">More\u2026</a>'
             )
+
+    def _open_help_link(self, _url: str) -> None:
+        label = self.sender()
+        if label is not None:
+            webbrowser.open(label.property("hint_url"))
 
     def _run_dep_check(self, startup: bool = False) -> None:
         statuses = _check_dependencies(self.db_url.text())

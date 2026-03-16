@@ -26,3 +26,5 @@ vbt_sanskrit.md
 
 # Built Rust binaries for packaging
 resources/bin/
+
+logs
