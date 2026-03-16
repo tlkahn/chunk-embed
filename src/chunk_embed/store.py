@@ -98,8 +98,8 @@ def search_chunks(
     conn: psycopg.Connection,
     query_embedding: np.ndarray,
     top_k: int = 10,
-    source_path: str | None = None,
-    chunk_type: str | None = None,
+    source_paths: list[str] | None = None,
+    chunk_types: list[str] | None = None,
     threshold: float = 0.0,
 ) -> list[SearchResult]:
     query_vec = query_embedding.tolist()
@@ -114,13 +114,13 @@ def search_chunks(
     )
     params: list = [query_vec]
 
-    if source_path is not None:
-        sql += " AND d.source_path = %s"
-        params.append(source_path)
+    if source_paths:
+        sql += " AND d.source_path = ANY(%s)"
+        params.append(source_paths)
 
-    if chunk_type is not None:
-        sql += " AND c.chunk_type = %s"
-        params.append(chunk_type)
+    if chunk_types:
+        sql += " AND c.chunk_type = ANY(%s)"
+        params.append(chunk_types)
 
     sql += " ORDER BY c.embedding <=> %s::vector LIMIT %s"
     params.extend([query_vec, top_k])

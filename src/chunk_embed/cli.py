@@ -99,7 +99,8 @@ def query(query_text: str, top_k: int, database_url: str, source: str | None,
     with psycopg.connect(database_url) as conn:
         register_vector(conn)
         results = search_chunks(conn, query_embedding, top_k=top_k,
-                                source_path=source, chunk_type=chunk_type,
+                                source_paths=[source] if source else None,
+                                chunk_types=[chunk_type] if chunk_type else None,
                                 threshold=threshold)
 
     if as_json:

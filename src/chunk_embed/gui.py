@@ -42,6 +42,95 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Multi-select combo box
+# ---------------------------------------------------------------------------
+
+class CheckableComboBox(QComboBox):
+    """QComboBox that allows selecting multiple items via checkboxes.
+
+    Displays checked item names joined by ", " in the line-edit.
+    An empty selection is equivalent to "(all)".
+    """
+
+    selection_changed = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        self.lineEdit().setPlaceholderText("(all)")
+        self.model().dataChanged.connect(self._update_display)
+        self._updating = False
+        # Intercept clicks on the popup list to toggle checkboxes.
+        self.view().viewport().installEventFilter(self)
+
+    # -- public API --
+
+    def checked_items(self) -> list[str]:
+        """Return the list of checked item texts."""
+        items: list[str] = []
+        for i in range(self.model().rowCount()):
+            item = self.model().item(i)
+            if item is not None and item.checkState() == Qt.CheckState.Checked:
+                items.append(item.text())
+        return items
+
+    def set_items(self, items: list[str], previously_checked: list[str] | None = None) -> None:
+        """Replace all items and optionally restore checked state."""
+        self._updating = True
+        self.clear()
+        for text in items:
+            self.addItem(text)
+            item = self.model().item(self.count() - 1)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            if previously_checked and text in previously_checked:
+                item.setCheckState(Qt.CheckState.Checked)
+            else:
+                item.setCheckState(Qt.CheckState.Unchecked)
+        self._updating = False
+        self._update_display()
+
+    # -- overrides --
+
+    def addItem(self, text, userData=None):  # noqa: N802
+        super().addItem(text, userData)
+        item = self.model().item(self.count() - 1)
+        if item is not None and not (item.flags() & Qt.ItemFlag.ItemIsUserCheckable):
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+
+    def hidePopup(self):  # noqa: N802
+        # Only close the popup when clicking outside, not on item toggle.
+        if not self.view().underMouse():
+            super().hidePopup()
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if obj is self.view().viewport() and event.type() == QEvent.Type.MouseButtonRelease:
+            index = self.view().indexAt(event.position().toPoint())
+            if index.isValid():
+                item = self.model().item(index.row())
+                if item is not None and (item.flags() & Qt.ItemFlag.ItemIsUserCheckable):
+                    new_state = (
+                        Qt.CheckState.Unchecked
+                        if item.checkState() == Qt.CheckState.Checked
+                        else Qt.CheckState.Checked
+                    )
+                    item.setCheckState(new_state)
+                    return True  # consume the event
+        return super().eventFilter(obj, event)
+
+    # -- internal --
+
+    def _update_display(self) -> None:
+        if self._updating:
+            return
+        checked = self.checked_items()
+        self.lineEdit().setText(", ".join(checked) if checked else "")
+        self.lineEdit().setToolTip(", ".join(checked) if checked else "(all)")
+        self.selection_changed.emit()
+
+
+# ---------------------------------------------------------------------------
 # Log forwarding to Qt
 # ---------------------------------------------------------------------------
 
@@ -271,16 +360,16 @@ class QueryWorker(QThread):
         query_text: str,
         database_url: str,
         top_k: int = 10,
-        source_filter: str = "",
-        chunk_type_filter: str = "",
+        source_filter: list[str] | None = None,
+        chunk_type_filter: list[str] | None = None,
         threshold: float = 0.0,
     ) -> None:
         super().__init__()
         self.query_text = query_text
         self.database_url = database_url
         self.top_k = top_k
-        self.source_filter = source_filter
-        self.chunk_type_filter = chunk_type_filter
+        self.source_filter = source_filter or []
+        self.chunk_type_filter = chunk_type_filter or []
         self.threshold = threshold
 
     def run(self) -> None:
@@ -320,8 +409,8 @@ class QueryWorker(QThread):
                 conn,
                 query_embedding,
                 top_k=self.top_k,
-                source_path=self.source_filter or None,
-                chunk_type=self.chunk_type_filter or None,
+                source_paths=self.source_filter or None,
+                chunk_types=self.chunk_type_filter or None,
                 threshold=self.threshold,
             )
 
@@ -633,9 +722,8 @@ class MainWindow(QMainWindow):
     # ---- Filter dropdowns ----
 
     @staticmethod
-    def _get_filter_value(combo: QComboBox) -> str:
-        text = combo.currentText().strip()
-        return "" if text == "(all)" else text
+    def _get_filter_value(combo: CheckableComboBox) -> list[str]:
+        return combo.checked_items()
 
     def _refresh_filters(self) -> None:
         if self._filter_worker is not None:
@@ -652,18 +740,9 @@ class MainWindow(QMainWindow):
         self._repopulate_combo(self.chunk_type_filter, chunk_types)
 
     @staticmethod
-    def _repopulate_combo(combo: QComboBox, items: list[str]) -> None:
-        prev = combo.currentText()
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem("(all)")
-        combo.addItems(items)
-        idx = combo.findText(prev)
-        if idx >= 0:
-            combo.setCurrentIndex(idx)
-        else:
-            combo.setCurrentIndex(0)
-        combo.blockSignals(False)
+    def _repopulate_combo(combo: CheckableComboBox, items: list[str]) -> None:
+        previously_checked = combo.checked_items()
+        combo.set_items(items, previously_checked)
 
     def _on_filters_error(self, msg: str) -> None:
         logger.warning("Failed to load filter options: %s", msg)
@@ -701,15 +780,13 @@ class MainWindow(QMainWindow):
         filt_row.addWidget(self.top_k_spin)
 
         filt_row.addWidget(QLabel("Source:"))
-        self.source_filter = QComboBox()
-        self.source_filter.setEditable(True)
-        self.source_filter.addItem("(all)")
+        self.source_filter = CheckableComboBox()
+        self.source_filter.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         filt_row.addWidget(self.source_filter)
 
         filt_row.addWidget(QLabel("Type:"))
-        self.chunk_type_filter = QComboBox()
-        self.chunk_type_filter.setEditable(True)
-        self.chunk_type_filter.addItem("(all)")
+        self.chunk_type_filter = CheckableComboBox()
+        self.chunk_type_filter.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         filt_row.addWidget(self.chunk_type_filter)
 
         filt_row.addWidget(QLabel("Threshold:"))

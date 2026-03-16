@@ -138,14 +138,14 @@ def test_search_chunks_top_k(conn):
 
 def test_search_chunks_filter_source(conn):
     _seed_search_data(conn)
-    results = search_chunks(conn, make_embedding(seed=10), source_path="/test/beta.md")
+    results = search_chunks(conn, make_embedding(seed=10), source_paths=["/test/beta.md"])
     assert all(r.source_path == "/test/beta.md" for r in results)
     assert len(results) == 1
 
 
 def test_search_chunks_filter_chunk_type(conn):
     _seed_search_data(conn)
-    results = search_chunks(conn, make_embedding(seed=10), chunk_type="heading")
+    results = search_chunks(conn, make_embedding(seed=10), chunk_types=["heading"])
     assert all(r.chunk_type == "heading" for r in results)
     assert len(results) == 1
 

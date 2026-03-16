@@ -191,8 +191,8 @@ def test_query_top_k(runner, mock_query_deps):
 def test_query_source_filter(runner, mock_query_deps):
     mock_search = mock_query_deps
     runner.invoke(main, ["query", "test", "--source", "foo.md"])
-    assert mock_search.call_args.kwargs.get("source_path") == "foo.md" or \
-           mock_search.call_args[1].get("source_path") == "foo.md"
+    assert mock_search.call_args.kwargs.get("source_paths") == ["foo.md"] or \
+           mock_search.call_args[1].get("source_paths") == ["foo.md"]
 
 
 def test_query_no_results(runner):
