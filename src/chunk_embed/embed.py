@@ -55,18 +55,25 @@ def embed_chunks(
 
     texts = [c.text for c in chunks]
     total = len(texts)
-    results: list[np.ndarray] = []
+    results: list[np.ndarray] = [np.empty(0)] * total
+
+    # Sort indices by text length so similar-sized texts are batched together.
+    # This minimises padding waste — a single long text no longer forces every
+    # other text in the batch to be padded to its length.
+    sorted_indices = sorted(range(total), key=lambda i: len(texts[i]))
 
     use_tqdm = on_progress is None
     pbar = tqdm(total=total, desc="Embedding", unit="chunk") if use_tqdm else None
-    for i in range(0, total, batch_size):
-        batch = texts[i : i + batch_size]
-        batch_embeddings = embedder.embed(batch)
-        for vec in batch_embeddings:
-            results.append(vec)
-        done = min(i + len(batch), total)
+    done = 0
+    for batch_start in range(0, total, batch_size):
+        batch_indices = sorted_indices[batch_start : batch_start + batch_size]
+        batch_texts = [texts[i] for i in batch_indices]
+        batch_embeddings = embedder.embed(batch_texts)
+        for slot, vec in zip(batch_indices, batch_embeddings):
+            results[slot] = vec.copy()
+        done += len(batch_indices)
         if pbar is not None:
-            pbar.update(len(batch))
+            pbar.update(len(batch_indices))
         if on_progress is not None:
             on_progress(done, total)
     if pbar is not None:

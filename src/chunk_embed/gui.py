@@ -588,7 +588,7 @@ class MainWindow(QMainWindow):
         browse_menu = QMenu(self)
         browse_menu.addAction(QAction("Files…", self, triggered=self._browse_files))
         browse_menu.addAction(QAction("Folder…", self, triggered=self._browse_folder))
-        file_btn = QPushButton("Browse… ▾")
+        file_btn = QPushButton("Browse")
         file_btn.setMenu(browse_menu)
         src_row.addWidget(file_btn)
         self.ingest_source = QLabel("No file selected")
@@ -776,7 +776,7 @@ class MainWindow(QMainWindow):
         self.threshold_spin = QDoubleSpinBox()
         self.threshold_spin.setRange(0.0, 1.0)
         self.threshold_spin.setSingleStep(0.05)
-        self.threshold_spin.setValue(0.0)
+        self.threshold_spin.setValue(0.5)
         self.threshold_spin.setDecimals(2)
         filt_row.addWidget(self.threshold_spin)
 

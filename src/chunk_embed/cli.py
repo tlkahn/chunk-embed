@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import logging
 import shutil
 import sys
@@ -143,6 +144,8 @@ def ingest(
             failures.append((file_path, str(e)))
             if fail_fast:
                 sys.exit(1)
+        finally:
+            gc.collect()
 
     click.echo(f"\nDone: {successes} succeeded, {len(failures)} failed")
     if failures:
