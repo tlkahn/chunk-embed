@@ -70,28 +70,11 @@ class DepStatus:
     ok: bool
     detail: str
     install_hint: str
+    help_anchor: str = ""
 
 
 def _check_dependencies(database_url: str) -> list[DepStatus]:
     results: list[DepStatus] = []
-
-    # text-chunker
-    tc = shutil.which("text-chunker")
-    results.append(DepStatus(
-        name="text-chunker",
-        ok=tc is not None,
-        detail=tc or "not found in PATH",
-        install_hint="cargo install from https://github.com/tlkahn/text-chunker",
-    ))
-
-    # sentenza
-    sz = shutil.which("sentenza")
-    results.append(DepStatus(
-        name="sentenza",
-        ok=sz is not None,
-        detail=sz or "not found in PATH",
-        install_hint="cargo install from https://github.com/tlkahn/sentenza",
-    ))
 
     # BGE-M3 model
     model_ok = MODEL_DIR.is_dir()
@@ -100,6 +83,7 @@ def _check_dependencies(database_url: str) -> list[DepStatus]:
         ok=model_ok,
         detail=str(MODEL_DIR) if model_ok else f"{MODEL_DIR} not found",
         install_hint="Auto-downloaded on first embed, or manually place in local_bge_m3/",
+        help_anchor="bge-m3",
     ))
 
     # Editor ($VISUAL / $EDITOR)
@@ -111,6 +95,7 @@ def _check_dependencies(database_url: str) -> list[DepStatus]:
             ok=editor_path is not None,
             detail=editor or "set but not found in PATH",
             install_hint="Ensure $VISUAL or $EDITOR points to a valid executable",
+            help_anchor="editor",
         ))
     else:
         results.append(DepStatus(
@@ -118,6 +103,7 @@ def _check_dependencies(database_url: str) -> list[DepStatus]:
             ok=False,
             detail="$VISUAL and $EDITOR not set — source links open without line positioning",
             install_hint='export EDITOR=code  (or vim, nvim, emacs, subl, etc.)',
+            help_anchor="editor",
         ))
 
     # PostgreSQL + pgvector
@@ -141,6 +127,7 @@ def _check_dependencies(database_url: str) -> list[DepStatus]:
         ok=db_ok,
         detail=db_detail,
         install_hint='brew install postgresql; createdb chunk_embed; psql chunk_embed -c "CREATE EXTENSION vector"',
+        help_anchor="postgresql",
     ))
 
     return results
@@ -431,6 +418,7 @@ class MainWindow(QMainWindow):
         self.dep_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.dep_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.dep_table.verticalHeader().setVisible(False)
+        self.dep_table.itemSelectionChanged.connect(self._update_dep_label_colors)
         layout.addWidget(self.dep_table, 1)
 
         # Re-check button
@@ -443,6 +431,8 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(tab, "Setup")
 
+    _HELP_PAGE = Path(__file__).resolve().parents[2] / "resources" / "setup-help.html"
+
     def _populate_dep_table(self, statuses: list[DepStatus]) -> None:
         self.dep_table.setRowCount(len(statuses))
         green = QColor(0, 160, 0)
@@ -453,8 +443,42 @@ class MainWindow(QMainWindow):
             status_item.setForeground(green if dep.ok else red)
             self.dep_table.setItem(i, 1, status_item)
             self.dep_table.setItem(i, 2, QTableWidgetItem(dep.detail))
-            self.dep_table.setItem(i, 3, QTableWidgetItem(dep.install_hint))
+            # Install/Fix column: hint text + "More…" link
+            if dep.help_anchor and self._HELP_PAGE.exists():
+                url = QUrl.fromLocalFile(str(self._HELP_PAGE))
+                url.setFragment(dep.help_anchor)
+                label = QLabel()
+                label.setOpenExternalLinks(True)
+                label.setTextFormat(Qt.TextFormat.RichText)
+                label.setWordWrap(True)
+                label.setProperty("hint_text", dep.install_hint)
+                label.setProperty("hint_url", url.toString())
+                self.dep_table.setCellWidget(i, 3, label)
+            else:
+                self.dep_table.setItem(i, 3, QTableWidgetItem(dep.install_hint))
+        self._update_dep_label_colors()
         self.dep_table.resizeRowsToContents()
+
+    def _update_dep_label_colors(self) -> None:
+        pal = self.dep_table.palette()
+        sel_text = pal.color(pal.ColorRole.HighlightedText).name()
+        norm_text = pal.color(pal.ColorRole.Text).name()
+        norm_link = pal.color(pal.ColorRole.Link).name()
+        selected_rows = {idx.row() for idx in self.dep_table.selectionModel().selectedRows()}
+        for row in range(self.dep_table.rowCount()):
+            label = self.dep_table.cellWidget(row, 3)
+            if not isinstance(label, QLabel):
+                continue
+            hint = label.property("hint_text")
+            url = label.property("hint_url")
+            if row in selected_rows:
+                text_col, link_col = sel_text, sel_text
+            else:
+                text_col, link_col = norm_text, norm_link
+            label.setText(
+                f'<span style="color:{text_col}">{hint}</span>'
+                f'  <a href="{url}" style="color:{link_col}">More\u2026</a>'
+            )
 
     def _run_dep_check(self, startup: bool = False) -> None:
         statuses = _check_dependencies(self.db_url.text())
