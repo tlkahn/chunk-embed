@@ -79,6 +79,8 @@ def ingest_one_file(
     database_url: str | None = None,
     dry_run: bool = False,
     on_log: Callable[[str], None] | None = None,
+    on_embed_progress: Callable[[int, int], None] | None = None,
+    on_store_progress: Callable[[int, int], None] | None = None,
 ) -> IngestResult:
     """Ingest a single file through the full pipeline.
 
@@ -91,6 +93,8 @@ def ingest_one_file(
 
     effective_source = source if source is not None else str(file_path)
 
+    if file_path.suffix.lower() in MARKDOWN_SUFFIXES:
+        log("Running text-chunker on markdown file…")
     raw = read_or_chunk_file(file_path)
     chunks_input = parse_chunks(raw)
     log(f"Parsed {chunks_input.total_chunks} chunks ({chunks_input.mode} mode)")
@@ -100,7 +104,9 @@ def ingest_one_file(
         chunks = split_chunks(chunks)
         log(f"Split into {len(chunks)} sentence chunks")
 
-    embeddings = embed_chunks(chunks, embedder, batch_size=batch_size)
+    embeddings = embed_chunks(
+        chunks, embedder, batch_size=batch_size, on_progress=on_embed_progress,
+    )
 
     doc_id: int | None = None
     if not dry_run:
@@ -110,7 +116,7 @@ def ingest_one_file(
             register_vector(conn)
             ensure_schema(conn)
             doc_id = upsert_document(conn, effective_source, chunks_input.mode, chunks_input.total_chunks)
-            insert_chunks(conn, doc_id, chunks, embeddings)
+            insert_chunks(conn, doc_id, chunks, embeddings, on_progress=on_store_progress)
             conn.commit()
 
     return IngestResult(

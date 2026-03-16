@@ -251,3 +251,40 @@ def test_ingest_one_file_parse_error(tmp_path):
             split=False,
             dry_run=True,
         )
+
+
+def test_ingest_one_file_progress_callbacks(tmp_path):
+    """on_embed_progress and on_store_progress are forwarded."""
+    src = tmp_path / "chunks.json"
+    src.write_text((FIXTURES / "sample_chunks.json").read_text())
+    embedder = MockEmbedder()
+    embed_calls: list[tuple[int, int]] = []
+    store_calls: list[tuple[int, int]] = []
+
+    mock_conn = MagicMock()
+    mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    with (
+        patch("chunk_embed.pipeline.psycopg.connect", return_value=mock_conn),
+        patch("chunk_embed.pipeline.register_vector"),
+        patch("chunk_embed.pipeline.ensure_schema"),
+        patch("chunk_embed.pipeline.upsert_document", return_value=1),
+        patch("chunk_embed.pipeline.insert_chunks") as mock_insert,
+        patch("chunk_embed.pipeline.embed_chunks") as mock_embed,
+    ):
+        mock_embed.return_value = [MagicMock() for _ in range(3)]
+        result = ingest_one_file(
+            file_path=src,
+            source=None,
+            embedder=embedder,
+            split=False,
+            database_url="postgresql://localhost/test",
+            on_embed_progress=lambda d, t: embed_calls.append((d, t)),
+            on_store_progress=lambda d, t: store_calls.append((d, t)),
+        )
+    # embed_chunks should have been called with on_progress
+    mock_embed.assert_called_once()
+    assert mock_embed.call_args.kwargs.get("on_progress") is not None
+    # insert_chunks should have been called with on_progress
+    mock_insert.assert_called_once()
+    assert mock_insert.call_args.kwargs.get("on_progress") is not None

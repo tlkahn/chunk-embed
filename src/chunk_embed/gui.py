@@ -168,49 +168,11 @@ class IngestWorker(QThread):
         except Exception as exc:
             self.error.emit(str(exc))
 
-    _MARKDOWN_SUFFIXES = frozenset({".md", ".markdown", ".mdown", ".mkd"})
-
     def _run_pipeline(self) -> None:
-        from chunk_embed.parse import parse_chunks, ParseError
-        from chunk_embed.embed import BgeM3Embedder, embed_chunks
-        from chunk_embed.split import split_chunks
+        from chunk_embed.embed import BgeM3Embedder
+        from chunk_embed.pipeline import ingest_one_file
 
-        # Parse — run text-chunker first for markdown files
-        file_path = Path(self.file_path)
-        if file_path.suffix.lower() in self._MARKDOWN_SUFFIXES:
-            self.log.emit("Running text-chunker on markdown file…")
-            try:
-                result = subprocess.run(
-                    ["text-chunker", "--json", "chunks", str(file_path)],
-                    capture_output=True, text=True, check=True,
-                )
-            except FileNotFoundError:
-                self.error.emit("text-chunker not found in PATH — install it to ingest markdown files")
-                return
-            except subprocess.CalledProcessError as e:
-                self.error.emit(f"text-chunker failed (exit {e.returncode}): {e.stderr.strip()}")
-                return
-            raw = result.stdout
-        else:
-            self.log.emit("Reading input file…")
-            raw = file_path.read_text()
-
-        try:
-            chunks_input = parse_chunks(raw)
-        except ParseError as e:
-            self.error.emit(f"Parse error: {e}")
-            return
-
-        self.log.emit(f"Parsed {chunks_input.total_chunks} chunks ({chunks_input.mode} mode)")
-        chunks = chunks_input.chunks
-
-        # Split
-        if self.split:
-            self.log.emit("Splitting sentences (auto-detecting language)…")
-            chunks = split_chunks(chunks)
-            self.log.emit(f"Split into {len(chunks)} sentence chunks")
-
-        # Embed — install log handler to forward model-loading messages to GUI
+        # Load embedder with log bridge so model-loading messages reach the GUI
         bridge = _LogSignalBridge()
         bridge.message.connect(self.log.emit)
         handler = QtLogHandler(bridge)
@@ -227,36 +189,23 @@ class IngestWorker(QThread):
             embed_logger.removeHandler(handler)
             st_logger.removeHandler(handler)
 
-        self.log.emit("Embedding chunks…")
-
-        def on_embed_progress(done: int, total: int) -> None:
-            self.progress.emit("Embedding", done, total)
-
-        embeddings = embed_chunks(
-            chunks, embedder, batch_size=self.batch_size, on_progress=on_embed_progress,
+        result = ingest_one_file(
+            file_path=Path(self.file_path),
+            source=self.source,
+            embedder=embedder,
+            split=self.split,
+            batch_size=self.batch_size,
+            database_url=self.database_url,
+            dry_run=self.dry_run,
+            on_log=self.log.emit,
+            on_embed_progress=lambda done, total: self.progress.emit("Embedding", done, total),
+            on_store_progress=lambda done, total: self.progress.emit("Storing", done, total),
         )
 
-        if self.dry_run:
-            self.finished.emit(f"Dry run complete — {len(embeddings)} embeddings produced, DB write skipped.")
-            return
-
-        # Store
-        self.log.emit("Writing to database…")
-        import psycopg
-        from pgvector.psycopg import register_vector
-        from chunk_embed.store import ensure_schema, upsert_document, insert_chunks
-
-        def on_store_progress(done: int, total: int) -> None:
-            self.progress.emit("Storing", done, total)
-
-        with psycopg.connect(self.database_url) as conn:
-            register_vector(conn)
-            ensure_schema(conn)
-            doc_id = upsert_document(conn, self.source, chunks_input.mode, chunks_input.total_chunks)
-            insert_chunks(conn, doc_id, chunks, embeddings, on_progress=on_store_progress)
-            conn.commit()
-
-        self.finished.emit(f"Done — document {doc_id}, {len(chunks)} chunks stored.")
+        if result.dry_run:
+            self.finished.emit(f"Dry run complete — {result.num_embeddings} embeddings produced, DB write skipped.")
+        else:
+            self.finished.emit(f"Done — document {result.doc_id}, {result.num_chunks} chunks stored.")
 
 
 class QueryWorker(QThread):
