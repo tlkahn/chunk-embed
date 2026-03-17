@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,9 +10,12 @@ import psycopg
 from pgvector.psycopg import register_vector
 
 from chunk_embed.embed import Embedder, embed_chunks
+from chunk_embed.models import ALL_CHUNK_TYPES, TEXTUAL_TYPES, ChunkData
 from chunk_embed.parse import parse_chunks
 from chunk_embed.split import split_chunks
 from chunk_embed.store import ensure_schema, upsert_document, insert_chunks
+
+logger = logging.getLogger(__name__)
 
 MARKDOWN_SUFFIXES = frozenset({".md", ".markdown", ".mdown", ".mkd"})
 ELIGIBLE_SUFFIXES = MARKDOWN_SUFFIXES | frozenset({".json"})
@@ -70,6 +74,43 @@ def read_or_chunk_file(file_path: Path) -> str:
     return file_path.read_text()
 
 
+def filter_chunks(
+    chunks: list[ChunkData],
+    allowed_types: frozenset[str],
+) -> list[ChunkData]:
+    """Return only chunks whose chunk_type is in *allowed_types*."""
+    return [c for c in chunks if c.chunk_type in allowed_types]
+
+
+def resolve_ingest_types(
+    include_types: tuple[str, ...] | None = None,
+    exclude_types: tuple[str, ...] | None = None,
+    all_types: bool = False,
+) -> frozenset[str]:
+    """Compute the final set of allowed chunk types from CLI flags.
+
+    Raises ``ValueError`` on conflicting options.
+    """
+    if include_types and (exclude_types or all_types):
+        raise ValueError(
+            "--include-type cannot be combined with --exclude-type or --all-types"
+        )
+
+    if include_types:
+        unknown = set(include_types) - ALL_CHUNK_TYPES
+        if unknown:
+            raise ValueError(f"Unknown chunk type(s): {', '.join(sorted(unknown))}")
+        return frozenset(include_types)
+
+    base = ALL_CHUNK_TYPES if all_types else TEXTUAL_TYPES
+    if exclude_types:
+        unknown = set(exclude_types) - ALL_CHUNK_TYPES
+        if unknown:
+            raise ValueError(f"Unknown chunk type(s): {', '.join(sorted(unknown))}")
+        return base - frozenset(exclude_types)
+    return base
+
+
 def ingest_one_file(
     file_path: Path,
     source: str | None,
@@ -78,6 +119,7 @@ def ingest_one_file(
     batch_size: int = 32,
     database_url: str | None = None,
     dry_run: bool = False,
+    allowed_types: frozenset[str] | None = None,
     on_log: Callable[[str], None] | None = None,
     on_embed_progress: Callable[[int, int], None] | None = None,
     on_store_progress: Callable[[int, int], None] | None = None,
@@ -100,6 +142,13 @@ def ingest_one_file(
     log(f"Parsed {chunks_input.total_chunks} chunks ({chunks_input.mode} mode)")
 
     chunks = chunks_input.chunks
+    effective_types = allowed_types if allowed_types is not None else TEXTUAL_TYPES
+    before = len(chunks)
+    chunks = filter_chunks(chunks, effective_types)
+    skipped = before - len(chunks)
+    if skipped:
+        log(f"Filtered to {len(chunks)} chunks ({skipped} skipped by type)")
+
     if split:
         chunks = split_chunks(chunks)
         log(f"Split into {len(chunks)} sentence chunks")

@@ -36,6 +36,18 @@ class ChunkSummary:
     total_chars: int
 
 
+ALL_CHUNK_TYPES: frozenset[str] = frozenset({
+    "paragraph", "heading", "list_item", "block_quote",
+    "definition_item", "theorem",
+    "code_block", "math_block", "table",
+})
+
+TEXTUAL_TYPES: frozenset[str] = frozenset({
+    "paragraph", "heading", "list_item", "block_quote",
+    "definition_item", "theorem",
+})
+
+
 @dataclass(frozen=True)
 class SearchResult:
     similarity: float

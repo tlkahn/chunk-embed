@@ -1,0 +1,51 @@
+{
+  "total_chunks": 5,
+  "mode": "document",
+  "chunks": [
+    {
+      "text": "# Introduction",
+      "chunk_type": "heading",
+      "heading_context": ["Introduction"],
+      "heading_level": 1,
+      "page_number": null,
+      "source_line_start": 1,
+      "source_line_end": 1
+    },
+    {
+      "text": "This is a paragraph about text chunking.",
+      "chunk_type": "paragraph",
+      "heading_context": ["Introduction"],
+      "heading_level": null,
+      "page_number": null,
+      "source_line_start": 3,
+      "source_line_end": 3
+    },
+    {
+      "text": "def hello():\n    print('hello')",
+      "chunk_type": "code_block",
+      "heading_context": ["Introduction"],
+      "heading_level": null,
+      "page_number": null,
+      "source_line_start": 5,
+      "source_line_end": 6
+    },
+    {
+      "text": "E = mc^2",
+      "chunk_type": "math_block",
+      "heading_context": ["Introduction"],
+      "heading_level": null,
+      "page_number": null,
+      "source_line_start": 8,
+      "source_line_end": 8
+    },
+    {
+      "text": "| A | B |\n|---|---|\n| 1 | 2 |",
+      "chunk_type": "table",
+      "heading_context": ["Introduction"],
+      "heading_level": null,
+      "page_number": null,
+      "source_line_start": 10,
+      "source_line_end": 12
+    }
+  ]
+}

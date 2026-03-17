@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from chunk_embed.embed import MODEL_DIR
-from chunk_embed.models import SearchResult
+from chunk_embed.models import ALL_CHUNK_TYPES, TEXTUAL_TYPES, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +242,7 @@ class IngestWorker(QThread):
         database_url: str,
         dry_run: bool,
         batch_size: int = 32,
+        allowed_types: frozenset[str] | None = None,
     ) -> None:
         super().__init__()
         self.file_paths = file_paths
@@ -249,6 +250,7 @@ class IngestWorker(QThread):
         self.database_url = database_url
         self.dry_run = dry_run
         self.batch_size = batch_size
+        self.allowed_types = allowed_types
 
     def run(self) -> None:
         try:
@@ -293,6 +295,7 @@ class IngestWorker(QThread):
                     batch_size=self.batch_size,
                     database_url=self.database_url,
                     dry_run=self.dry_run,
+                    allowed_types=self.allowed_types,
                     on_log=lambda msg, _p=prefix: self.log.emit(f"{_p}: {msg}"),
                     on_embed_progress=lambda done, tot, _p=prefix: self.progress.emit(f"{_p} — Embedding", done, tot),
                     on_store_progress=lambda done, tot, _p=prefix: self.progress.emit(f"{_p} — Storing", done, tot),
@@ -606,6 +609,16 @@ class MainWindow(QMainWindow):
         opt_row.addWidget(self.split_check)
         self.dry_run_check = QCheckBox("Dry run")
         opt_row.addWidget(self.dry_run_check)
+
+        opt_row.addWidget(QLabel("Types:"))
+        self.ingest_type_filter = CheckableComboBox()
+        all_types_sorted = sorted(ALL_CHUNK_TYPES)
+        self.ingest_type_filter.set_items(
+            all_types_sorted,
+            previously_checked=sorted(TEXTUAL_TYPES),
+        )
+        opt_row.addWidget(self.ingest_type_filter)
+
         opt_row.addStretch()
         self.ingest_btn = QPushButton("Ingest")
         self.ingest_btn.setDefault(True)
@@ -659,11 +672,15 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.show()
 
+        checked = self.ingest_type_filter.checked_items()
+        ingest_types = frozenset(checked) if checked else None
+
         self._worker = IngestWorker(
             file_paths=file_paths,
             split=self.split_check.isChecked(),
             database_url=self.db_url.text(),
             dry_run=self.dry_run_check.isChecked(),
+            allowed_types=ingest_types,
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.log.connect(lambda msg: self.ingest_log.append(msg))

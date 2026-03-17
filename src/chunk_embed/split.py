@@ -4,18 +4,11 @@ import logging
 import subprocess
 from dataclasses import replace
 
-from chunk_embed.models import ChunkData
+from chunk_embed.models import ChunkData, TEXTUAL_TYPES
 
 logger = logging.getLogger(__name__)
 
-SPLITTABLE_TYPES: frozenset[str] = frozenset({
-    "paragraph",
-    "block_quote",
-    "definition_item",
-    "theorem",
-    "list_item",
-    "heading",
-})
+SPLITTABLE_TYPES = TEXTUAL_TYPES
 
 _detector = None
 

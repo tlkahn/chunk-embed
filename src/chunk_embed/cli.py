@@ -14,9 +14,12 @@ from pgvector.psycopg import register_vector
 from chunk_embed.embed import BgeM3Embedder, embed_chunks
 from chunk_embed.format import format_results_human, format_results_json
 from chunk_embed.parse import parse_chunks, ParseError
+from chunk_embed.models import ALL_CHUNK_TYPES, TEXTUAL_TYPES
 from chunk_embed.pipeline import (
     MARKDOWN_SUFFIXES,
+    filter_chunks,
     ingest_one_file,
+    resolve_ingest_types,
     resolve_paths,
 )
 from chunk_embed.split import split_chunks
@@ -55,6 +58,15 @@ def main() -> None:
 @click.option("--glob", "file_glob", default=None, help="Glob pattern for directory filtering")
 @click.option("--fail-fast", is_flag=True, help="Stop on first file error")
 @click.option("--no-recursive", is_flag=True, help="Don't recurse into subdirectories")
+@click.option(
+    "--include-type", "include_types", multiple=True,
+    help="Only embed these chunk types (repeatable, conflicts with --exclude-type/--all-types)",
+)
+@click.option(
+    "--exclude-type", "exclude_types", multiple=True,
+    help="Remove these types from the default set (repeatable)",
+)
+@click.option("--all-types", is_flag=True, help="Start from all 9 chunk types instead of textual-only")
 def ingest(
     input_paths: tuple[str, ...],
     source: str | None,
@@ -65,12 +77,26 @@ def ingest(
     file_glob: str | None,
     fail_fast: bool,
     no_recursive: bool,
+    include_types: tuple[str, ...],
+    exclude_types: tuple[str, ...],
+    all_types: bool,
 ) -> None:
     """Ingest text-chunker JSON (or markdown) into pgvector.
 
     Accepts one or more files and/or directories. With no arguments, reads
     JSON from stdin (requires --source).
     """
+    # --- resolve allowed chunk types ---
+    try:
+        allowed_types = resolve_ingest_types(
+            include_types=include_types or None,
+            exclude_types=exclude_types or None,
+            all_types=all_types,
+        )
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
     # --- stdin path (backward compat) ---
     if not input_paths or input_paths == ("-",):
         if source is None:
@@ -87,6 +113,12 @@ def ingest(
         click.echo(f"Parsed {chunks_input.total_chunks} chunks ({chunks_input.mode} mode)")
 
         chunks = chunks_input.chunks
+        before = len(chunks)
+        chunks = filter_chunks(chunks, allowed_types)
+        skipped = before - len(chunks)
+        if skipped:
+            click.echo(f"Filtered to {len(chunks)} chunks ({skipped} skipped by type)")
+
         if not no_split:
             chunks = split_chunks(chunks)
             click.echo(f"Split into {len(chunks)} sentence chunks")
@@ -145,6 +177,7 @@ def ingest(
                 batch_size=batch_size,
                 database_url=database_url,
                 dry_run=dry_run,
+                allowed_types=allowed_types,
             )
             click.echo(f"  OK: {result.num_chunks} chunks" +
                        (f", document {result.doc_id}" if result.doc_id else ""))

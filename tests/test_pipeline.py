@@ -3,8 +3,16 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from chunk_embed.pipeline import resolve_paths, read_or_chunk_file, ingest_one_file, IngestResult
-from tests.conftest import MockEmbedder
+from chunk_embed.models import ALL_CHUNK_TYPES, TEXTUAL_TYPES
+from chunk_embed.pipeline import (
+    filter_chunks,
+    resolve_ingest_types,
+    resolve_paths,
+    read_or_chunk_file,
+    ingest_one_file,
+    IngestResult,
+)
+from tests.conftest import MockEmbedder, make_chunk
 
 
 def test_resolve_paths_single_json_file(tmp_path):
@@ -288,3 +296,135 @@ def test_ingest_one_file_progress_callbacks(tmp_path):
     # insert_chunks should have been called with on_progress
     mock_insert.assert_called_once()
     assert mock_insert.call_args.kwargs.get("on_progress") is not None
+
+
+# --- filter_chunks ---
+
+
+def test_filter_chunks_keeps_matching():
+    chunks = [
+        make_chunk("hello", chunk_type="paragraph"),
+        make_chunk("world", chunk_type="code_block"),
+        make_chunk("heading", chunk_type="heading"),
+    ]
+    result = filter_chunks(chunks, frozenset({"paragraph", "heading"}))
+    assert len(result) == 2
+    assert all(c.chunk_type in {"paragraph", "heading"} for c in result)
+
+
+def test_filter_chunks_empty_allowed():
+    chunks = [make_chunk("hello", chunk_type="paragraph")]
+    result = filter_chunks(chunks, frozenset())
+    assert result == []
+
+
+def test_filter_chunks_all_allowed():
+    chunks = [
+        make_chunk("a", chunk_type="paragraph"),
+        make_chunk("b", chunk_type="code_block"),
+        make_chunk("c", chunk_type="table"),
+    ]
+    result = filter_chunks(chunks, ALL_CHUNK_TYPES)
+    assert len(result) == 3
+
+
+def test_filter_chunks_default_textual():
+    chunks = [
+        make_chunk("a", chunk_type="paragraph"),
+        make_chunk("b", chunk_type="code_block"),
+        make_chunk("c", chunk_type="math_block"),
+        make_chunk("d", chunk_type="table"),
+        make_chunk("e", chunk_type="heading"),
+    ]
+    result = filter_chunks(chunks, TEXTUAL_TYPES)
+    assert len(result) == 2
+    assert {c.chunk_type for c in result} == {"paragraph", "heading"}
+
+
+# --- resolve_ingest_types ---
+
+
+def test_resolve_ingest_types_default():
+    result = resolve_ingest_types()
+    assert result == TEXTUAL_TYPES
+
+
+def test_resolve_ingest_types_all():
+    result = resolve_ingest_types(all_types=True)
+    assert result == ALL_CHUNK_TYPES
+
+
+def test_resolve_ingest_types_include():
+    result = resolve_ingest_types(include_types=("code_block", "table"))
+    assert result == frozenset({"code_block", "table"})
+
+
+def test_resolve_ingest_types_exclude():
+    result = resolve_ingest_types(exclude_types=("heading",))
+    assert result == TEXTUAL_TYPES - {"heading"}
+
+
+def test_resolve_ingest_types_all_minus_exclude():
+    result = resolve_ingest_types(exclude_types=("code_block",), all_types=True)
+    assert result == ALL_CHUNK_TYPES - {"code_block"}
+
+
+def test_resolve_ingest_types_include_conflicts_with_exclude():
+    with pytest.raises(ValueError, match="cannot be combined"):
+        resolve_ingest_types(include_types=("paragraph",), exclude_types=("heading",))
+
+
+def test_resolve_ingest_types_include_conflicts_with_all():
+    with pytest.raises(ValueError, match="cannot be combined"):
+        resolve_ingest_types(include_types=("paragraph",), all_types=True)
+
+
+def test_resolve_ingest_types_unknown_include():
+    with pytest.raises(ValueError, match="Unknown chunk type"):
+        resolve_ingest_types(include_types=("nonexistent",))
+
+
+def test_resolve_ingest_types_unknown_exclude():
+    with pytest.raises(ValueError, match="Unknown chunk type"):
+        resolve_ingest_types(exclude_types=("nonexistent",))
+
+
+# --- ingest_one_file with allowed_types ---
+
+MIXED_FIXTURE = FIXTURES / "sample_chunks_mixed.json"
+
+
+def test_ingest_one_file_default_filters_non_textual(tmp_path):
+    """Default allowed_types=None filters out code_block, math_block, table."""
+    src = tmp_path / "mixed.json"
+    src.write_text(MIXED_FIXTURE.read_text())
+    embedder = MockEmbedder()
+    with patch("chunk_embed.pipeline.psycopg.connect") as mock_connect:
+        result = ingest_one_file(
+            file_path=src,
+            source="test.md",
+            embedder=embedder,
+            split=False,
+            dry_run=True,
+        )
+        mock_connect.assert_not_called()
+    # mixed fixture has 5 chunks, 2 are textual (heading + paragraph)
+    assert result.num_chunks == 2
+    assert result.num_embeddings == 2
+
+
+def test_ingest_one_file_all_types(tmp_path):
+    """allowed_types=ALL_CHUNK_TYPES keeps everything."""
+    src = tmp_path / "mixed.json"
+    src.write_text(MIXED_FIXTURE.read_text())
+    embedder = MockEmbedder()
+    result = ingest_one_file(
+        file_path=src,
+        source="test.md",
+        embedder=embedder,
+        split=False,
+        dry_run=True,
+        allowed_types=ALL_CHUNK_TYPES,
+    )
+    assert result.num_chunks == 5
+    assert result.num_embeddings == 5

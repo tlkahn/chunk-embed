@@ -169,3 +169,27 @@ def test_ingest_worker_fatal_embedder_error(qapp):
     error.assert_called_once()
     assert "GPU OOM" in error.call_args[0][0]
     finished.assert_not_called()
+
+
+def test_ingest_worker_passes_allowed_types(qapp):
+    """allowed_types flows through to ingest_one_file."""
+    types = frozenset({"paragraph", "heading"})
+    worker = _make_worker(["/tmp/a.json"], allowed_types=types)
+    finished = MagicMock()
+    worker.finished.connect(finished)
+
+    with (
+        patch("chunk_embed.embed.BgeM3Embedder") as MockEmb,
+        patch("chunk_embed.pipeline.ingest_one_file", return_value=_ok_result("/tmp/a.json")) as mock_ingest,
+    ):
+        MockEmb.return_value = MagicMock()
+        worker._run_pipeline()
+
+    mock_ingest.assert_called_once()
+    assert mock_ingest.call_args.kwargs.get("allowed_types") == types
+
+
+def test_ingest_worker_allowed_types_none_by_default(qapp):
+    """Without allowed_types, it defaults to None."""
+    worker = _make_worker(["/tmp/a.json"])
+    assert worker.allowed_types is None

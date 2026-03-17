@@ -7,7 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 from chunk_embed.cli import main
-from chunk_embed.models import ChunkSummary, DocumentInfo, SearchResult
+from chunk_embed.models import ALL_CHUNK_TYPES, TEXTUAL_TYPES, ChunkSummary, DocumentInfo, SearchResult
 from tests.conftest import MockEmbedder
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -467,3 +467,113 @@ def test_remove_abort(runner, mock_doc_deps):
     result = runner.invoke(main, ["remove", "/test/a.md"], input="n\n")
     assert result.exit_code == 0
     assert "Aborted." in result.output
+
+
+# --- chunk type filtering tests ---
+
+MIXED_FIXTURE = FIXTURES / "sample_chunks_mixed.json"
+
+
+def test_cli_ingest_help_shows_type_flags(runner):
+    result = runner.invoke(main, ["ingest", "--help"])
+    assert result.exit_code == 0
+    assert "--include-type" in result.output
+    assert "--exclude-type" in result.output
+    assert "--all-types" in result.output
+
+
+def test_cli_stdin_default_filters_non_textual(runner, mock_deps):
+    """Default ingest from stdin skips code_block/math_block/table."""
+    sample = MIXED_FIXTURE.read_text()
+    result = runner.invoke(main, ["ingest", "--source", "test.md"], input=sample)
+    assert result.exit_code == 0, result.output
+    assert "Filtered to 2 chunks (3 skipped by type)" in result.output
+
+
+def test_cli_stdin_all_types(runner, mock_deps):
+    """--all-types keeps all chunk types."""
+    sample = MIXED_FIXTURE.read_text()
+    result = runner.invoke(
+        main, ["ingest", "--source", "test.md", "--all-types"], input=sample,
+    )
+    assert result.exit_code == 0, result.output
+    assert "skipped by type" not in result.output
+
+
+def test_cli_stdin_include_type(runner, mock_deps):
+    """--include-type picks only specified types."""
+    sample = MIXED_FIXTURE.read_text()
+    result = runner.invoke(
+        main, ["ingest", "--source", "test.md", "--include-type", "code_block"],
+        input=sample,
+    )
+    assert result.exit_code == 0, result.output
+    assert "Filtered to 1 chunks (4 skipped by type)" in result.output
+
+
+def test_cli_stdin_exclude_type(runner, mock_deps):
+    """--exclude-type removes from default textual set."""
+    sample = MIXED_FIXTURE.read_text()
+    result = runner.invoke(
+        main, ["ingest", "--source", "test.md", "--exclude-type", "heading"],
+        input=sample,
+    )
+    assert result.exit_code == 0, result.output
+    assert "Filtered to 1 chunks (4 skipped by type)" in result.output
+
+
+def test_cli_include_conflicts_with_exclude(runner):
+    """--include-type + --exclude-type is an error."""
+    result = runner.invoke(
+        main,
+        ["ingest", "--source", "test.md",
+         "--include-type", "paragraph", "--exclude-type", "heading"],
+        input="{}",
+    )
+    assert result.exit_code != 0
+    assert "cannot be combined" in result.output
+
+
+def test_cli_include_conflicts_with_all_types(runner):
+    """--include-type + --all-types is an error."""
+    result = runner.invoke(
+        main,
+        ["ingest", "--source", "test.md",
+         "--include-type", "paragraph", "--all-types"],
+        input="{}",
+    )
+    assert result.exit_code != 0
+    assert "cannot be combined" in result.output
+
+
+def test_cli_all_types_with_exclude(runner, mock_deps):
+    """--all-types + --exclude-type is allowed."""
+    sample = MIXED_FIXTURE.read_text()
+    result = runner.invoke(
+        main,
+        ["ingest", "--source", "test.md", "--all-types", "--exclude-type", "table"],
+        input=sample,
+    )
+    assert result.exit_code == 0, result.output
+    assert "Filtered to 4 chunks (1 skipped by type)" in result.output
+
+
+def test_cli_file_path_passes_allowed_types(runner, mock_batch_deps, tmp_path):
+    """File path ingest passes allowed_types to ingest_one_file."""
+    src = tmp_path / "chunks.json"
+    src.write_text(MIXED_FIXTURE.read_text())
+    result = runner.invoke(main, ["ingest", str(src), "--all-types"])
+    assert result.exit_code == 0, result.output
+    mock_batch_deps.assert_called_once()
+    assert mock_batch_deps.call_args.kwargs.get("allowed_types") == ALL_CHUNK_TYPES
+
+
+def test_cli_unknown_include_type(runner):
+    """--include-type with unknown type is an error."""
+    result = runner.invoke(
+        main,
+        ["ingest", "--source", "test.md", "--include-type", "nonexistent"],
+        input="{}",
+    )
+    assert result.exit_code != 0
+    assert "Unknown chunk type" in result.output
