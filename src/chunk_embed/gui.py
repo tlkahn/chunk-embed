@@ -935,10 +935,10 @@ class MainWindow(QMainWindow):
         if self._docs_worker is not None:
             return
         self._docs_worker = DocsDeleteWorker(self.db_url.text(), paths)
-        self._docs_worker.finished.connect(self._on_docs_delete_done)
-        self._docs_worker.error.connect(self._on_docs_delete_error)
         self._docs_worker.finished.connect(self._cleanup_docs_worker)
         self._docs_worker.error.connect(self._cleanup_docs_worker)
+        self._docs_worker.finished.connect(self._on_docs_delete_done)
+        self._docs_worker.error.connect(self._on_docs_delete_error)
         self._docs_worker.start()
 
     def _on_docs_delete_done(self, count: int) -> None:
