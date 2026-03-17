@@ -62,33 +62,26 @@ jobs:
       - name: Install Briefcase
         run: pip install briefcase
 
-      # PySide6/shiboken6 ships .abi3.so/.dylib files that macOS lipo
-      # cannot parse, breaking Briefcase's library thinning step.
-      # Since we only target arm64 and pip already downloads arm64
-      # wheels, thinning is unnecessary — patch it out.
-      - name: Patch Briefcase to skip library thinning
-        run: |
-          python3 -c "
-          import pathlib, importlib, re, sys
-          mod = importlib.import_module('briefcase.platforms.macOS.utils')
-          p = pathlib.Path(mod.__file__)
-          src = p.read_text()
-          patched, n = re.subn(
-              r'(^( *)def thin_app_packages\(self[^)]*\):)',
-              r'\1\n\2    return  # patched: skip thinning for arm64-only build',
-              src,
-              flags=re.MULTILINE,
-          )
-          if n > 0:
-              p.write_text(patched)
-              print(f'Patched thin_app_packages in {p}')
-          else:
-              print('ERROR: thin_app_packages not found in utils.py')
-              sys.exit(1)
-          "
-
+      # PySide6/shiboken6 ships .abi3.so/.dylib files that lipo cannot
+      # parse, causing Briefcase's thinning step to fail. Since we only
+      # target arm64 and pip downloads arm64 wheels, thinning is moot.
+      # Let create fail on thinning (the last step) then proceed — the
+      # app scaffold with all deps is already in place.
       - name: Create macOS app
+        id: create_app
+        continue-on-error: true
         run: briefcase create macOS --no-input
+
+      - name: Verify app scaffold exists
+        run: |
+          APP_PACKAGES="build/chunk_embed/macos/app/Chunk Embed.app/Contents/Resources/app_packages"
+          if [ -d "$APP_PACKAGES" ]; then
+            echo "App scaffold with dependencies exists"
+            ls "$APP_PACKAGES" | head -20
+          else
+            echo "ERROR: App scaffold missing — create failed before installing dependencies"
+            exit 1
+          fi
 
       - name: Purge pip cache
         run: pip cache purge
