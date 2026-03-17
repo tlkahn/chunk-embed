@@ -40,9 +40,17 @@ jobs:
           # Xcode — not needed for Briefcase macOS app packaging
           sudo rm -rf /Applications/Xcode_*.app /Applications/Xcode.app
           sudo rm -rf /Library/Developer/CoreSimulator
+          sudo rm -rf /Library/Developer/CommandLineTools/SDKs
+          # Android SDK
+          sudo rm -rf ~/Library/Android /usr/local/lib/android
           # Other large preinstalled tools
           sudo rm -rf /usr/local/share/powershell /usr/local/.ghcup
           sudo rm -rf /opt/homebrew/Caskroom /opt/homebrew/Cellar/dotnet /opt/homebrew/Cellar/gcc
+          sudo rm -rf /usr/local/share/chromium /usr/local/lib/node_modules
+          sudo rm -rf /opt/homebrew/Cellar/node /opt/homebrew/Cellar/go
+          sudo rm -rf /usr/local/share/vcpkg /usr/local/.dotnet
+          # Caches
+          sudo rm -rf ~/Library/Caches/Homebrew
           echo "=== After cleanup ==="
           df -h /
       # ── Python + Briefcase ────────────────────────────────────────
@@ -57,8 +65,20 @@ jobs:
       - name: Create macOS app
         run: briefcase create macOS --no-input
 
+      - name: Purge pip cache
+        run: pip cache purge
+
       - name: Build macOS app
         run: briefcase build macOS --no-input
+
+      - name: Remove intermediate build artifacts
+        run: |
+          # Keep only the .app bundle that briefcase package needs
+          find build -mindepth 1 -maxdepth 1 ! -name '*.app' -exec rm -rf {} + 2>/dev/null || true
+          find build -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+
+      - name: Check disk space before packaging
+        run: df -h /
 
       - name: Package .dmg (ad-hoc signed)
         run: briefcase package macOS --adhoc-sign --no-input
