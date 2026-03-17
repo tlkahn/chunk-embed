@@ -193,3 +193,123 @@ def test_ingest_worker_allowed_types_none_by_default(qapp):
     """Without allowed_types, it defaults to None."""
     worker = _make_worker(["/tmp/a.json"])
     assert worker.allowed_types is None
+
+
+# -- DocsListWorker tests ---------------------------------------------------
+
+def test_docs_list_worker(qapp):
+    from chunk_embed.gui import DocsListWorker
+    from chunk_embed.models import DocumentInfo
+    from datetime import datetime
+
+    fake_docs = [
+        DocumentInfo(id=1, source_path="/a.md", mode="document", total_chunks=10, created_at=datetime(2026, 1, 1)),
+        DocumentInfo(id=2, source_path="/b.md", mode="document", total_chunks=5, created_at=datetime(2026, 1, 2)),
+    ]
+
+    worker = DocsListWorker(database_url="postgresql://localhost/test")
+    finished = MagicMock()
+    error = MagicMock()
+    worker.finished.connect(finished)
+    worker.error.connect(error)
+
+    with patch("psycopg.connect") as mock_connect:
+        mock_conn = MagicMock()
+        mock_connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        with patch("chunk_embed.store.list_documents", return_value=fake_docs):
+            worker.run()
+
+    finished.assert_called_once_with(fake_docs)
+    error.assert_not_called()
+
+
+def test_docs_list_worker_error(qapp):
+    from chunk_embed.gui import DocsListWorker
+
+    worker = DocsListWorker(database_url="postgresql://localhost/test")
+    finished = MagicMock()
+    error = MagicMock()
+    worker.finished.connect(finished)
+    worker.error.connect(error)
+
+    with patch("psycopg.connect", side_effect=RuntimeError("connection refused")):
+        worker.run()
+
+    error.assert_called_once()
+    assert "connection refused" in error.call_args[0][0]
+    finished.assert_not_called()
+
+
+# -- DocsDetailWorker tests -------------------------------------------------
+
+def test_docs_detail_worker(qapp):
+    from chunk_embed.gui import DocsDetailWorker
+    from chunk_embed.models import ChunkSummary
+
+    fake_summaries = [
+        ChunkSummary(chunk_type="paragraph", count=8, total_chars=2000),
+        ChunkSummary(chunk_type="heading", count=3, total_chars=120),
+    ]
+
+    worker = DocsDetailWorker(database_url="postgresql://localhost/test", document_id=42)
+    finished = MagicMock()
+    error = MagicMock()
+    worker.finished.connect(finished)
+    worker.error.connect(error)
+
+    with patch("psycopg.connect") as mock_connect:
+        mock_conn = MagicMock()
+        mock_connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        with patch("chunk_embed.store.get_chunk_summary", return_value=fake_summaries):
+            worker.run()
+
+    finished.assert_called_once_with(42, fake_summaries)
+    error.assert_not_called()
+
+
+# -- DocsDeleteWorker tests -------------------------------------------------
+
+def test_docs_delete_worker(qapp):
+    from chunk_embed.gui import DocsDeleteWorker
+
+    worker = DocsDeleteWorker(
+        database_url="postgresql://localhost/test",
+        source_paths=["/a.md", "/b.md"],
+    )
+    finished = MagicMock()
+    error = MagicMock()
+    worker.finished.connect(finished)
+    worker.error.connect(error)
+
+    with patch("psycopg.connect") as mock_connect:
+        mock_conn = MagicMock()
+        mock_connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        with patch("chunk_embed.store.delete_documents", return_value=2):
+            worker.run()
+
+    finished.assert_called_once_with(2)
+    mock_conn.commit.assert_called_once()
+    error.assert_not_called()
+
+
+def test_docs_delete_worker_error(qapp):
+    from chunk_embed.gui import DocsDeleteWorker
+
+    worker = DocsDeleteWorker(
+        database_url="postgresql://localhost/test",
+        source_paths=["/a.md"],
+    )
+    finished = MagicMock()
+    error = MagicMock()
+    worker.finished.connect(finished)
+    worker.error.connect(error)
+
+    with patch("psycopg.connect", side_effect=RuntimeError("connection refused")):
+        worker.run()
+
+    error.assert_called_once()
+    assert "connection refused" in error.call_args[0][0]
+    finished.assert_not_called()

@@ -13,6 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, QThread, Signal, QSize, QUrl, Qt
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -37,7 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from chunk_embed.embed import MODEL_DIR
-from chunk_embed.models import ALL_CHUNK_TYPES, TEXTUAL_TYPES, SearchResult
+from chunk_embed.models import ALL_CHUNK_TYPES, TEXTUAL_TYPES, ChunkSummary, DocumentInfo, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -407,6 +409,75 @@ class FilterOptionsWorker(QThread):
             self.error.emit(str(exc))
 
 
+class DocsListWorker(QThread):
+    """Fetch all documents from the database."""
+
+    finished = Signal(list)  # list[DocumentInfo]
+    error = Signal(str)
+
+    def __init__(self, database_url: str) -> None:
+        super().__init__()
+        self.database_url = database_url
+
+    def run(self) -> None:
+        try:
+            import psycopg
+            from chunk_embed.store import list_documents
+
+            with psycopg.connect(self.database_url, connect_timeout=3) as conn:
+                docs = list_documents(conn)
+            self.finished.emit(docs)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class DocsDetailWorker(QThread):
+    """Fetch chunk summary for a single document."""
+
+    finished = Signal(int, list)  # (document_id, list[ChunkSummary])
+    error = Signal(str)
+
+    def __init__(self, database_url: str, document_id: int) -> None:
+        super().__init__()
+        self.database_url = database_url
+        self.document_id = document_id
+
+    def run(self) -> None:
+        try:
+            import psycopg
+            from chunk_embed.store import get_chunk_summary
+
+            with psycopg.connect(self.database_url, connect_timeout=3) as conn:
+                summaries = get_chunk_summary(conn, self.document_id)
+            self.finished.emit(self.document_id, summaries)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class DocsDeleteWorker(QThread):
+    """Delete documents by source path."""
+
+    finished = Signal(int)  # count deleted
+    error = Signal(str)
+
+    def __init__(self, database_url: str, source_paths: list[str]) -> None:
+        super().__init__()
+        self.database_url = database_url
+        self.source_paths = source_paths
+
+    def run(self) -> None:
+        try:
+            import psycopg
+            from chunk_embed.store import delete_documents
+
+            with psycopg.connect(self.database_url) as conn:
+                count = delete_documents(conn, self.source_paths)
+                conn.commit()
+            self.finished.emit(count)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 # ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
@@ -419,6 +490,9 @@ class MainWindow(QMainWindow):
         self._worker: QThread | None = None
         self._filter_worker: FilterOptionsWorker | None = None
         self._last_results: list[SearchResult] = []
+        self._docs_worker: QThread | None = None
+        self._docs_detail_worker: QThread | None = None
+        self._docs_documents: list[DocumentInfo] = []
 
         # Central widget
         central = QWidget()
@@ -432,6 +506,7 @@ class MainWindow(QMainWindow):
         self._build_setup_tab()   # index 0
         self._build_ingest_tab()  # index 1
         self._build_search_tab()  # index 2
+        self._build_docs_tab()    # index 3
 
         # Status bar with embedded progress bar
         self.status_bar = QStatusBar()
@@ -547,9 +622,10 @@ class MainWindow(QMainWindow):
         self._populate_dep_table(statuses)
         all_ok = all(s.ok for s in statuses)
 
-        # Enable/disable Ingest and Search tabs
+        # Enable/disable Ingest, Search, and Documents tabs
         self.tabs.setTabEnabled(1, all_ok)  # Ingest
         self.tabs.setTabEnabled(2, all_ok)  # Search
+        self.tabs.setTabEnabled(3, all_ok)  # Documents
 
         if all_ok:
             if startup:
@@ -557,6 +633,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, "status_bar"):
                 self.status_bar.showMessage("All dependencies satisfied")
             self._refresh_filters()
+            self._refresh_docs()
         else:
             self.tabs.setCurrentIndex(0)  # stay on Setup
             if hasattr(self, "status_bar"):
@@ -578,6 +655,7 @@ class MainWindow(QMainWindow):
         all_ok = all(s.ok for s in statuses)
         self.tabs.setTabEnabled(1, all_ok)
         self.tabs.setTabEnabled(2, all_ok)
+        self.tabs.setTabEnabled(3, all_ok)
 
     # ---- Ingest tab ----
 
@@ -711,6 +789,7 @@ class MainWindow(QMainWindow):
         self.ingest_btn.setEnabled(True)
         self._cleanup_worker()
         self._refresh_filters()
+        self._refresh_docs()
 
     def _on_ingest_error(self, msg: str) -> None:
         self.ingest_log.append(f"ERROR: {msg}")
@@ -718,6 +797,160 @@ class MainWindow(QMainWindow):
         self.progress_bar.hide()
         self.ingest_btn.setEnabled(True)
         self._cleanup_worker()
+
+    # ---- Documents tab ----
+
+    def _build_docs_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        # Documents table
+        self.docs_table = QTableWidget()
+        self.docs_table.setColumnCount(5)
+        self.docs_table.setHorizontalHeaderLabels(["ID", "Source", "Mode", "Chunks", "Created"])
+        header = self.docs_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.docs_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.docs_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.docs_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.docs_table.verticalHeader().setVisible(False)
+        self.docs_table.itemSelectionChanged.connect(self._on_doc_selection_changed)
+        layout.addWidget(self.docs_table, 2)
+
+        # Chunk breakdown detail
+        layout.addWidget(QLabel("Chunk breakdown"))
+        self.docs_detail_table = QTableWidget()
+        self.docs_detail_table.setColumnCount(3)
+        self.docs_detail_table.setHorizontalHeaderLabels(["Type", "Count", "Total Chars"])
+        detail_header = self.docs_detail_table.horizontalHeader()
+        detail_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        detail_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        detail_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.docs_detail_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.docs_detail_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.docs_detail_table.verticalHeader().setVisible(False)
+        layout.addWidget(self.docs_detail_table, 1)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self.docs_refresh_btn = QPushButton("Refresh")
+        self.docs_refresh_btn.clicked.connect(self._refresh_docs)
+        btn_row.addWidget(self.docs_refresh_btn)
+        self.docs_delete_btn = QPushButton("Delete")
+        self.docs_delete_btn.setEnabled(False)
+        self.docs_delete_btn.clicked.connect(self._delete_selected_docs)
+        btn_row.addWidget(self.docs_delete_btn)
+        layout.addLayout(btn_row)
+
+        self.tabs.addTab(tab, "Documents")
+
+    def _on_doc_selection_changed(self) -> None:
+        selected = self.docs_table.selectionModel().selectedRows()
+        self.docs_delete_btn.setEnabled(len(selected) > 0)
+        if len(selected) == 1:
+            row = selected[0].row()
+            if row < len(self._docs_documents):
+                doc = self._docs_documents[row]
+                self._fetch_doc_detail(doc.id)
+                return
+        self.docs_detail_table.setRowCount(0)
+
+    def _fetch_doc_detail(self, document_id: int) -> None:
+        if self._docs_detail_worker is not None:
+            return
+        self._docs_detail_worker = DocsDetailWorker(self.db_url.text(), document_id)
+        self._docs_detail_worker.finished.connect(self._on_docs_detail_done)
+        self._docs_detail_worker.error.connect(self._on_docs_detail_error)
+        self._docs_detail_worker.finished.connect(self._cleanup_docs_detail_worker)
+        self._docs_detail_worker.error.connect(self._cleanup_docs_detail_worker)
+        self._docs_detail_worker.start()
+
+    def _refresh_docs(self) -> None:
+        if self._docs_worker is not None:
+            return
+        self._docs_worker = DocsListWorker(self.db_url.text())
+        self._docs_worker.finished.connect(self._on_docs_list_done)
+        self._docs_worker.error.connect(self._on_docs_list_error)
+        self._docs_worker.finished.connect(self._cleanup_docs_worker)
+        self._docs_worker.error.connect(self._cleanup_docs_worker)
+        self._docs_worker.start()
+
+    def _on_docs_list_done(self, documents: list) -> None:
+        self._docs_documents = documents
+        self.docs_table.setRowCount(len(documents))
+        for i, doc in enumerate(documents):
+            self.docs_table.setItem(i, 0, QTableWidgetItem(str(doc.id)))
+            self.docs_table.setItem(i, 1, QTableWidgetItem(doc.source_path))
+            self.docs_table.setItem(i, 2, QTableWidgetItem(doc.mode))
+            self.docs_table.setItem(i, 3, QTableWidgetItem(str(doc.total_chunks)))
+            self.docs_table.setItem(i, 4, QTableWidgetItem(str(doc.created_at)))
+        self.docs_detail_table.setRowCount(0)
+
+    def _on_docs_list_error(self, msg: str) -> None:
+        self.status_bar.showMessage(f"Documents: {msg}")
+
+    def _on_docs_detail_done(self, doc_id: int, summaries: list) -> None:
+        self.docs_detail_table.setRowCount(len(summaries))
+        for i, s in enumerate(summaries):
+            self.docs_detail_table.setItem(i, 0, QTableWidgetItem(s.chunk_type))
+            self.docs_detail_table.setItem(i, 1, QTableWidgetItem(str(s.count)))
+            self.docs_detail_table.setItem(i, 2, QTableWidgetItem(str(s.total_chars)))
+
+    def _on_docs_detail_error(self, msg: str) -> None:
+        self.status_bar.showMessage(f"Chunk detail: {msg}")
+
+    def _delete_selected_docs(self) -> None:
+        selected = self.docs_table.selectionModel().selectedRows()
+        if not selected:
+            return
+        paths = []
+        for idx in selected:
+            row = idx.row()
+            if row < len(self._docs_documents):
+                paths.append(self._docs_documents[row].source_path)
+        if not paths:
+            return
+        n = len(paths)
+        answer = QMessageBox.question(
+            self,
+            "Delete documents",
+            f"Delete {n} document{'s' if n != 1 else ''} and all associated chunks?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.docs_delete_btn.setEnabled(False)
+        if self._docs_worker is not None:
+            return
+        self._docs_worker = DocsDeleteWorker(self.db_url.text(), paths)
+        self._docs_worker.finished.connect(self._on_docs_delete_done)
+        self._docs_worker.error.connect(self._on_docs_delete_error)
+        self._docs_worker.finished.connect(self._cleanup_docs_worker)
+        self._docs_worker.error.connect(self._cleanup_docs_worker)
+        self._docs_worker.start()
+
+    def _on_docs_delete_done(self, count: int) -> None:
+        self.status_bar.showMessage(f"Deleted {count} document{'s' if count != 1 else ''}")
+        self._refresh_docs()
+        self._refresh_filters()
+
+    def _on_docs_delete_error(self, msg: str) -> None:
+        self.status_bar.showMessage(f"Delete error: {msg}")
+        self.docs_delete_btn.setEnabled(True)
+
+    def _cleanup_docs_worker(self) -> None:
+        if self._docs_worker is not None:
+            self._docs_worker.wait()
+            self._docs_worker = None
+
+    def _cleanup_docs_detail_worker(self) -> None:
+        if self._docs_detail_worker is not None:
+            self._docs_detail_worker.wait()
+            self._docs_detail_worker = None
 
     # ---- Filter dropdowns ----
 
