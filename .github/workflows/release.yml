@@ -31,6 +31,19 @@ jobs:
       - name: Build Rust binaries
         run: ./scripts/build_rust_binaries.sh
 
+      - name: Free disk space
+        run: |
+          # Remove Rust build artifacts (binaries already copied to resources/bin)
+          rm -rf ~/.cargo/registry ~/.cargo/git
+          # Remove Xcode iOS/watchOS/tvOS simulators and platforms
+          sudo rm -rf /Library/Developer/CoreSimulator/Volumes/iOS_* \
+                      /Applications/Xcode_*.app/Contents/Developer/Platforms/iPhoneOS.platform \
+                      /Applications/Xcode_*.app/Contents/Developer/Platforms/WatchOS.platform \
+                      /Applications/Xcode_*.app/Contents/Developer/Platforms/AppleTVOS.platform \
+                      /Applications/Xcode_*.app/Contents/Developer/Platforms/WatchSimulator.platform \
+                      /Applications/Xcode_*.app/Contents/Developer/Platforms/AppleTVSimulator.platform \
+                      /Applications/Xcode_*.app/Contents/Developer/Platforms/iPhoneSimulator.platform || true
+          df -h /
       # ── Python + Briefcase ────────────────────────────────────────
       - name: Set up Python 3.13
         uses: actions/setup-python@v5

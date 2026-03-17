@@ -1,6 +1,6 @@
 [project]
 name = "chunk-embed"
-version = "0.1.0"
+version = "0.2.0"
 description = "Embed text-chunker JSON output into pgvector for semantic search"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -51,7 +51,7 @@ where = ["src"]
 [tool.briefcase]
 project_name = "Chunk Embed"
 bundle = "dev.chunkembed"
-version = "0.1.0"
+version = "0.2.0"
 url = "https://github.com/tlkahn/chunk-embed"
 license.file = "LICENSE"
 author = "tlkahn"
