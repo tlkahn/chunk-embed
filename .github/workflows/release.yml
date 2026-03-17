@@ -70,24 +70,20 @@ jobs:
         run: |
           python3 -c "
           import pathlib, importlib, re, sys
-          mod = importlib.import_module('briefcase.platforms.macOS')
+          mod = importlib.import_module('briefcase.platforms.macOS.utils')
           p = pathlib.Path(mod.__file__)
           src = p.read_text()
-          # Make any method with 'thin' in its name a no-op
           patched, n = re.subn(
-              r'(^( *)def \w*thin\w*\(self[^)]*\):)\n',
-              r'\1\n\2    return  # patched: skip thinning for arm64-only build\n',
+              r'(^( *)def thin_app_packages\(self[^)]*\):)',
+              r'\1\n\2    return  # patched: skip thinning for arm64-only build',
               src,
               flags=re.MULTILINE,
           )
           if n > 0:
               p.write_text(patched)
-              print(f'Patched {n} thin method(s) in {p}')
+              print(f'Patched thin_app_packages in {p}')
           else:
-              print('ERROR: No thin methods found. Briefcase API may have changed.')
-              for m in re.finditer(r'def (\w+)\(', src):
-                  if 'thin' in m.group(1).lower():
-                      print(f'  Found: {m.group(1)}')
+              print('ERROR: thin_app_packages not found in utils.py')
               sys.exit(1)
           "
 
