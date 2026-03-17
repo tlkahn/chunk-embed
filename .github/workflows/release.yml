@@ -62,31 +62,34 @@ jobs:
       - name: Install Briefcase
         run: pip install briefcase
 
-      # PySide6's shiboken6 ships .abi3.so files that lipo cannot parse,
-      # causing Briefcase's "Thinning libraries" step to fail with
-      # "Unable to determine architectures".  This wrapper reports such
-      # files as arm64 (which they already are from PyPI) so Briefcase
-      # skips them instead of erroring.
-      - name: Create lipo wrapper for Briefcase thinning compatibility
+      # PySide6/shiboken6 ships .abi3.so/.dylib files that macOS lipo
+      # cannot parse, breaking Briefcase's library thinning step.
+      # Since we only target arm64 and pip already downloads arm64
+      # wheels, thinning is unnecessary — patch it out.
+      - name: Patch Briefcase to skip library thinning
         run: |
-          mkdir -p "$HOME/bin"
-          cat > "$HOME/bin/lipo" << 'WRAPPER'
-          #!/bin/bash
-          output=$(/usr/bin/lipo "$@" 2>&1)
-          rc=$?
-          if [ $rc -ne 0 ] && [[ "$*" == *"-info"* ]]; then
-            for arg in "$@"; do
-              if [ -f "$arg" ]; then
-                echo "Non-fat file: $arg is architecture: arm64"
-                exit 0
-              fi
-            done
-          fi
-          echo "$output"
-          exit $rc
-          WRAPPER
-          chmod +x "$HOME/bin/lipo"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
+          python3 -c "
+          import pathlib, importlib, re, sys
+          mod = importlib.import_module('briefcase.platforms.macOS')
+          p = pathlib.Path(mod.__file__)
+          src = p.read_text()
+          # Make any method with 'thin' in its name a no-op
+          patched, n = re.subn(
+              r'(^( *)def \w*thin\w*\(self[^)]*\):)\n',
+              r'\1\n\2    return  # patched: skip thinning for arm64-only build\n',
+              src,
+              flags=re.MULTILINE,
+          )
+          if n > 0:
+              p.write_text(patched)
+              print(f'Patched {n} thin method(s) in {p}')
+          else:
+              print('ERROR: No thin methods found. Briefcase API may have changed.')
+              for m in re.finditer(r'def (\w+)\(', src):
+                  if 'thin' in m.group(1).lower():
+                      print(f'  Found: {m.group(1)}')
+              sys.exit(1)
+          "
 
       - name: Create macOS app
         run: briefcase create macOS --no-input
