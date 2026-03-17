@@ -62,26 +62,32 @@ jobs:
       - name: Install Briefcase
         run: pip install briefcase
 
-      # PySide6/shiboken6 ships .abi3.so/.dylib files that lipo cannot
-      # parse, causing Briefcase's thinning step to fail. Since we only
-      # target arm64 and pip downloads arm64 wheels, thinning is moot.
-      # Let create fail on thinning (the last step) then proceed — the
-      # app scaffold with all deps is already in place.
-      - name: Create macOS app
-        id: create_app
-        continue-on-error: true
-        run: briefcase create macOS --no-input
-
-      - name: Verify app scaffold exists
+      # Some .abi3.so files (tokenizers, shiboken6) aren't recognised by
+      # /usr/bin/lipo, causing Briefcase's thinning step to fail.
+      # This wrapper treats un-parseable files as arm64 (already correct
+      # from PyPI) so Briefcase skips them instead of erroring.
+      - name: Install lipo wrapper
         run: |
-          APP_PACKAGES="build/chunk_embed/macos/app/Chunk Embed.app/Contents/Resources/app_packages"
-          if [ -d "$APP_PACKAGES" ]; then
-            echo "App scaffold with dependencies exists"
-            ls "$APP_PACKAGES" | head -20
-          else
-            echo "ERROR: App scaffold missing — create failed before installing dependencies"
-            exit 1
+          sudo tee /usr/local/bin/lipo > /dev/null << 'EOF'
+          #!/bin/bash
+          output=$(/usr/bin/lipo "$@" 2>&1)
+          rc=$?
+          if [ $rc -ne 0 ] && [[ "$*" == *"-info"* ]]; then
+            for arg in "$@"; do
+              if [ -f "$arg" ]; then
+                echo "Non-fat file: $arg is architecture: arm64"
+                exit 0
+              fi
+            done
           fi
+          echo "$output"
+          exit $rc
+          EOF
+          sudo chmod +x /usr/local/bin/lipo
+          echo "Wrapper installed at $(which lipo)"
+
+      - name: Create macOS app
+        run: briefcase create macOS --no-input
 
       - name: Purge pip cache
         run: pip cache purge
