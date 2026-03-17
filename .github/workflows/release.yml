@@ -33,16 +33,17 @@ jobs:
 
       - name: Free disk space
         run: |
-          # Remove Rust build artifacts (binaries already copied to resources/bin)
-          rm -rf ~/.cargo/registry ~/.cargo/git
-          # Remove Xcode iOS/watchOS/tvOS simulators and platforms
-          sudo rm -rf /Library/Developer/CoreSimulator/Volumes/iOS_* \
-                      /Applications/Xcode_*.app/Contents/Developer/Platforms/iPhoneOS.platform \
-                      /Applications/Xcode_*.app/Contents/Developer/Platforms/WatchOS.platform \
-                      /Applications/Xcode_*.app/Contents/Developer/Platforms/AppleTVOS.platform \
-                      /Applications/Xcode_*.app/Contents/Developer/Platforms/WatchSimulator.platform \
-                      /Applications/Xcode_*.app/Contents/Developer/Platforms/AppleTVSimulator.platform \
-                      /Applications/Xcode_*.app/Contents/Developer/Platforms/iPhoneSimulator.platform || true
+          echo "=== Before cleanup ==="
+          df -h /
+          # Rust artifacts — binaries already in resources/bin
+          rm -rf ~/.cargo ~/.rustup
+          # Xcode — not needed for Briefcase macOS app packaging
+          sudo rm -rf /Applications/Xcode_*.app /Applications/Xcode.app
+          sudo rm -rf /Library/Developer/CoreSimulator
+          # Other large preinstalled tools
+          sudo rm -rf /usr/local/share/powershell /usr/local/.ghcup
+          sudo rm -rf /opt/homebrew/Caskroom /opt/homebrew/Cellar/dotnet /opt/homebrew/Cellar/gcc
+          echo "=== After cleanup ==="
           df -h /
       # ── Python + Briefcase ────────────────────────────────────────
       - name: Set up Python 3.13
