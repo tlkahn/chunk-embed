@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import logging
 import shutil
 import sys
@@ -19,7 +20,16 @@ from chunk_embed.pipeline import (
     resolve_paths,
 )
 from chunk_embed.split import split_chunks
-from chunk_embed.store import ensure_schema, upsert_document, insert_chunks, search_chunks
+from chunk_embed.store import (
+    delete_documents,
+    ensure_schema,
+    get_chunk_summary,
+    get_document,
+    insert_chunks,
+    list_documents,
+    search_chunks,
+    upsert_document,
+)
 
 
 @click.group("chunk-embed")
@@ -182,3 +192,112 @@ def query(query_text: str, top_k: int, database_url: str, source: str | None,
         click.echo(format_results_json(results))
     else:
         click.echo(format_results_human(results))
+
+
+@main.command()
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.option(
+    "--database-url",
+    default="postgresql://localhost/chunk_embed",
+    envvar="DATABASE_URL",
+    help="PostgreSQL connection string",
+)
+def docs(as_json: bool, database_url: str) -> None:
+    """List all ingested documents."""
+    with psycopg.connect(database_url) as conn:
+        documents = list_documents(conn)
+
+    if not documents:
+        click.echo("No documents found.")
+        return
+
+    if as_json:
+        click.echo(json.dumps([
+            {
+                "id": d.id,
+                "source_path": d.source_path,
+                "mode": d.mode,
+                "total_chunks": d.total_chunks,
+                "created_at": d.created_at.isoformat(),
+            }
+            for d in documents
+        ], indent=2))
+        return
+
+    click.echo(f"{'ID':>6}  {'SOURCE':<50}  {'MODE':<10}  {'CHUNKS':>6}  CREATED")
+    for d in documents:
+        click.echo(
+            f"{d.id:>6}  {d.source_path:<50}  {d.mode:<10}  {d.total_chunks:>6}  "
+            f"{d.created_at:%Y-%m-%d %H:%M}"
+        )
+
+
+@main.command()
+@click.argument("source_path")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.option(
+    "--database-url",
+    default="postgresql://localhost/chunk_embed",
+    envvar="DATABASE_URL",
+    help="PostgreSQL connection string",
+)
+def show(source_path: str, as_json: bool, database_url: str) -> None:
+    """Show document details and chunk breakdown for SOURCE_PATH."""
+    with psycopg.connect(database_url) as conn:
+        doc = get_document(conn, source_path)
+        if doc is None:
+            click.echo(f"Document not found: {source_path}", err=True)
+            sys.exit(1)
+        summaries = get_chunk_summary(conn, doc.id)
+
+    if as_json:
+        click.echo(json.dumps({
+            "id": doc.id,
+            "source_path": doc.source_path,
+            "mode": doc.mode,
+            "total_chunks": doc.total_chunks,
+            "created_at": doc.created_at.isoformat(),
+            "chunk_types": [
+                {"chunk_type": s.chunk_type, "count": s.count, "total_chars": s.total_chars}
+                for s in summaries
+            ],
+        }, indent=2))
+        return
+
+    click.echo(f"Document: {doc.source_path}")
+    click.echo(f"ID: {doc.id}  Mode: {doc.mode}  Chunks: {doc.total_chunks}  Created: {doc.created_at:%Y-%m-%d %H:%M}")
+    if summaries:
+        click.echo(f"\n{'TYPE':<20}  {'COUNT':>6}  {'TOTAL CHARS':>12}")
+        for s in summaries:
+            click.echo(f"{s.chunk_type:<20}  {s.count:>6}  {s.total_chars:>12}")
+
+
+@main.command()
+@click.argument("source_paths", nargs=-1, required=True)
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+@click.option(
+    "--database-url",
+    default="postgresql://localhost/chunk_embed",
+    envvar="DATABASE_URL",
+    help="PostgreSQL connection string",
+)
+def remove(source_paths: tuple[str, ...], yes: bool, database_url: str) -> None:
+    """Remove one or more documents (and their chunks) by SOURCE_PATH."""
+    paths = list(source_paths)
+    if not yes:
+        click.echo(f"Will delete {len(paths)} document(s):")
+        for p in paths:
+            click.echo(f"  {p}")
+        if not click.confirm("Proceed?"):
+            click.echo("Aborted.")
+            return
+
+    with psycopg.connect(database_url) as conn:
+        count = delete_documents(conn, paths)
+        conn.commit()
+
+    if count == 0:
+        click.echo("No matching documents found.", err=True)
+        sys.exit(1)
+
+    click.echo(f"Deleted {count} document(s).")

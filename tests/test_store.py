@@ -1,8 +1,17 @@
 import numpy as np
 import pytest
 
-from chunk_embed.models import SearchResult
-from chunk_embed.store import ensure_schema, upsert_document, insert_chunks, search_chunks
+from chunk_embed.models import ChunkSummary, DocumentInfo, SearchResult
+from chunk_embed.store import (
+    delete_documents,
+    ensure_schema,
+    get_chunk_summary,
+    get_document,
+    insert_chunks,
+    list_documents,
+    search_chunks,
+    upsert_document,
+)
 from tests.conftest import make_chunk, make_embedding
 
 pytestmark = pytest.mark.integration
@@ -161,3 +170,74 @@ def test_search_chunks_threshold(conn):
 def test_search_chunks_empty_table(conn):
     results = search_chunks(conn, make_embedding(seed=10))
     assert results == []
+
+
+# --- list_documents / get_document / get_chunk_summary / delete_documents tests ---
+
+
+def test_list_documents_empty(conn):
+    assert list_documents(conn) == []
+
+
+def test_list_documents_returns_all(conn):
+    upsert_document(conn, "/test/a.md", "document", 2)
+    upsert_document(conn, "/test/b.md", "per_page", 5)
+    docs = list_documents(conn)
+    assert len(docs) == 2
+    assert all(isinstance(d, DocumentInfo) for d in docs)
+    # Most recent first
+    assert docs[0].source_path == "/test/b.md"
+    assert docs[1].source_path == "/test/a.md"
+
+
+def test_get_document_found(conn):
+    upsert_document(conn, "/test/found.md", "document", 3)
+    doc = get_document(conn, "/test/found.md")
+    assert doc is not None
+    assert isinstance(doc, DocumentInfo)
+    assert doc.source_path == "/test/found.md"
+    assert doc.mode == "document"
+    assert doc.total_chunks == 3
+
+
+def test_get_document_not_found(conn):
+    assert get_document(conn, "/no/such/path.md") is None
+
+
+def test_get_chunk_summary(conn):
+    doc_id = upsert_document(conn, "/test/summary.md", "document", 3)
+    chunks = [
+        make_chunk(text="paragraph one", chunk_type="paragraph"),
+        make_chunk(text="paragraph two longer", chunk_type="paragraph"),
+        make_chunk(text="a heading", chunk_type="heading"),
+    ]
+    embeddings = [make_embedding(seed=i) for i in range(3)]
+    insert_chunks(conn, doc_id, chunks, embeddings)
+
+    summaries = get_chunk_summary(conn, doc_id)
+    assert all(isinstance(s, ChunkSummary) for s in summaries)
+    by_type = {s.chunk_type: s for s in summaries}
+    assert by_type["paragraph"].count == 2
+    assert by_type["paragraph"].total_chars == len("paragraph one") + len("paragraph two longer")
+    assert by_type["heading"].count == 1
+    assert by_type["heading"].total_chars == len("a heading")
+
+
+def test_delete_documents_single(conn):
+    upsert_document(conn, "/test/del.md", "document", 1)
+    count = delete_documents(conn, ["/test/del.md"])
+    assert count == 1
+    assert get_document(conn, "/test/del.md") is None
+
+
+def test_delete_documents_multiple(conn):
+    upsert_document(conn, "/test/d1.md", "document", 1)
+    upsert_document(conn, "/test/d2.md", "document", 1)
+    count = delete_documents(conn, ["/test/d1.md", "/test/d2.md"])
+    assert count == 2
+    assert list_documents(conn) == []
+
+
+def test_delete_documents_not_found(conn):
+    count = delete_documents(conn, ["/no/such/path.md"])
+    assert count == 0

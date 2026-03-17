@@ -6,7 +6,7 @@ import numpy as np
 import psycopg
 from tqdm import tqdm
 
-from chunk_embed.models import ChunkData, SearchResult
+from chunk_embed.models import ChunkData, ChunkSummary, DocumentInfo, SearchResult
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -145,6 +145,45 @@ def search_chunks(
         ))
 
     return results
+
+
+def list_documents(conn: psycopg.Connection) -> list[DocumentInfo]:
+    rows = conn.execute(
+        "SELECT id, source_path, mode, total_chunks, created_at "
+        "FROM documents ORDER BY created_at DESC"
+    ).fetchall()
+    return [
+        DocumentInfo(id=r[0], source_path=r[1], mode=r[2], total_chunks=r[3], created_at=r[4])
+        for r in rows
+    ]
+
+
+def get_document(conn: psycopg.Connection, source_path: str) -> DocumentInfo | None:
+    row = conn.execute(
+        "SELECT id, source_path, mode, total_chunks, created_at "
+        "FROM documents WHERE source_path = %s",
+        (source_path,),
+    ).fetchone()
+    if row is None:
+        return None
+    return DocumentInfo(id=row[0], source_path=row[1], mode=row[2], total_chunks=row[3], created_at=row[4])
+
+
+def get_chunk_summary(conn: psycopg.Connection, document_id: int) -> list[ChunkSummary]:
+    rows = conn.execute(
+        "SELECT chunk_type, COUNT(*), SUM(LENGTH(text)) "
+        "FROM chunks WHERE document_id = %s GROUP BY chunk_type",
+        (document_id,),
+    ).fetchall()
+    return [ChunkSummary(chunk_type=r[0], count=r[1], total_chars=r[2]) for r in rows]
+
+
+def delete_documents(conn: psycopg.Connection, source_paths: list[str]) -> int:
+    cur = conn.execute(
+        "DELETE FROM documents WHERE source_path = ANY(%s)",
+        (source_paths,),
+    )
+    return cur.rowcount
 
 
 def get_distinct_sources(conn: psycopg.Connection) -> list[str]:

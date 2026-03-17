@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -6,7 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 from chunk_embed.cli import main
-from chunk_embed.models import SearchResult
+from chunk_embed.models import ChunkSummary, DocumentInfo, SearchResult
 from tests.conftest import MockEmbedder
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -320,3 +321,149 @@ def test_query_no_results(runner):
         result = runner.invoke(main, ["query", "nothing"])
         assert result.exit_code == 0
         assert "No results found." in result.output
+
+
+# --- docs / show / remove subcommand tests ---
+
+_SAMPLE_DOCS = [
+    DocumentInfo(id=1, source_path="/test/a.md", mode="document", total_chunks=5,
+                 created_at=datetime(2025, 6, 15, 10, 30, tzinfo=timezone.utc)),
+    DocumentInfo(id=2, source_path="/test/b.md", mode="per_page", total_chunks=3,
+                 created_at=datetime(2025, 6, 14, 8, 0, tzinfo=timezone.utc)),
+]
+
+_SAMPLE_SUMMARIES = [
+    ChunkSummary(chunk_type="paragraph", count=3, total_chars=450),
+    ChunkSummary(chunk_type="heading", count=2, total_chars=80),
+]
+
+
+@pytest.fixture
+def mock_doc_deps():
+    """Patch only psycopg.connect for doc browsing subcommands (no embedder)."""
+    mock_conn = MagicMock()
+    mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+    mock_conn.__exit__ = MagicMock(return_value=False)
+
+    with patch("chunk_embed.cli.psycopg.connect", return_value=mock_conn) as mock_connect:
+        yield mock_conn, mock_connect
+
+
+# --- docs ---
+
+
+def test_docs_help(runner):
+    result = runner.invoke(main, ["docs", "--help"])
+    assert result.exit_code == 0
+    assert "--json" in result.output
+
+
+def test_docs_table(runner, mock_doc_deps):
+    mock_conn, _ = mock_doc_deps
+    with patch("chunk_embed.cli.list_documents", return_value=_SAMPLE_DOCS):
+        result = runner.invoke(main, ["docs"])
+    assert result.exit_code == 0
+    assert "/test/a.md" in result.output
+    assert "/test/b.md" in result.output
+    assert "document" in result.output
+
+
+def test_docs_json(runner, mock_doc_deps):
+    mock_conn, _ = mock_doc_deps
+    with patch("chunk_embed.cli.list_documents", return_value=_SAMPLE_DOCS):
+        result = runner.invoke(main, ["docs", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert isinstance(data, list)
+    assert len(data) == 2
+    assert data[0]["source_path"] == "/test/a.md"
+
+
+def test_docs_empty(runner, mock_doc_deps):
+    mock_conn, _ = mock_doc_deps
+    with patch("chunk_embed.cli.list_documents", return_value=[]):
+        result = runner.invoke(main, ["docs"])
+    assert result.exit_code == 0
+    assert "No documents found." in result.output
+
+
+# --- show ---
+
+
+def test_show_help(runner):
+    result = runner.invoke(main, ["show", "--help"])
+    assert result.exit_code == 0
+    assert "SOURCE_PATH" in result.output
+
+
+def test_show_found(runner, mock_doc_deps):
+    mock_conn, _ = mock_doc_deps
+    with (
+        patch("chunk_embed.cli.get_document", return_value=_SAMPLE_DOCS[0]),
+        patch("chunk_embed.cli.get_chunk_summary", return_value=_SAMPLE_SUMMARIES),
+    ):
+        result = runner.invoke(main, ["show", "/test/a.md"])
+    assert result.exit_code == 0
+    assert "/test/a.md" in result.output
+    assert "paragraph" in result.output
+    assert "heading" in result.output
+
+
+def test_show_json(runner, mock_doc_deps):
+    mock_conn, _ = mock_doc_deps
+    with (
+        patch("chunk_embed.cli.get_document", return_value=_SAMPLE_DOCS[0]),
+        patch("chunk_embed.cli.get_chunk_summary", return_value=_SAMPLE_SUMMARIES),
+    ):
+        result = runner.invoke(main, ["show", "/test/a.md", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["source_path"] == "/test/a.md"
+    assert len(data["chunk_types"]) == 2
+
+
+def test_show_not_found(runner, mock_doc_deps):
+    mock_conn, _ = mock_doc_deps
+    with patch("chunk_embed.cli.get_document", return_value=None):
+        result = runner.invoke(main, ["show", "/no/such.md"])
+    assert result.exit_code == 1
+
+
+# --- remove ---
+
+
+def test_remove_help(runner):
+    result = runner.invoke(main, ["remove", "--help"])
+    assert result.exit_code == 0
+    assert "--yes" in result.output
+
+
+def test_remove_with_yes(runner, mock_doc_deps):
+    mock_conn, _ = mock_doc_deps
+    with patch("chunk_embed.cli.delete_documents", return_value=1):
+        result = runner.invoke(main, ["remove", "/test/a.md", "--yes"])
+    assert result.exit_code == 0
+    assert "Deleted 1" in result.output
+
+
+def test_remove_multiple(runner, mock_doc_deps):
+    mock_conn, _ = mock_doc_deps
+    with patch("chunk_embed.cli.delete_documents", return_value=2):
+        result = runner.invoke(main, ["remove", "/test/a.md", "/test/b.md", "--yes"])
+    assert result.exit_code == 0
+    assert "Deleted 2" in result.output
+
+
+def test_remove_not_found(runner, mock_doc_deps):
+    mock_conn, _ = mock_doc_deps
+    with patch("chunk_embed.cli.delete_documents", return_value=0):
+        result = runner.invoke(main, ["remove", "/no/such.md", "--yes"])
+    assert result.exit_code == 1
+    assert "No matching documents found." in result.output
+
+
+def test_remove_abort(runner, mock_doc_deps):
+    mock_conn, _ = mock_doc_deps
+    result = runner.invoke(main, ["remove", "/test/a.md"], input="n\n")
+    assert result.exit_code == 0
+    assert "Aborted." in result.output
