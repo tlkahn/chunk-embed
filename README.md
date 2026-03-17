@@ -4,6 +4,10 @@ Embed [text-chunker](https://github.com/your-user/text-chunker) JSON output into
 
 Takes structural chunks (headings, paragraphs, code blocks, math, etc.) from Markdown or LaTeX documents, encodes them with [BGE-M3](https://huggingface.co/BAAI/bge-m3) (1024-dim multilingual embeddings), and stores both the text and vectors in PostgreSQL. Supports semantic similarity search via the `query` subcommand.
 
+## Demo
+
+<video src="resources/demo.mp4" controls width="100%"></video>
+
 ## Installation
 
 Requires Python 3.13+, PostgreSQL with [pgvector](https://github.com/pgvector/pgvector). Optional: [Sentenza](https://github.com/your-user/sentenza) for sentence-level splitting.
