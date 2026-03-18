@@ -6,7 +6,7 @@ Takes structural chunks (headings, paragraphs, code blocks, math, etc.) from Mar
 
 ## Demo
 
-<video src="resources/demo.mp4" controls width="100%"></video>
+https://github.com/tlkahn/chunk-embed/releases/download/v0.2.0/demo.mp4
 
 ## Installation
 
